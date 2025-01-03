@@ -30,9 +30,13 @@ git clone https://github.com/1324762577/wenku8EpubDownloader-Nodejs-.git
 <li>
 将你自己找到的封面放到文件夹根目录并命名为cover.jpg
 <li>
-复制wenku8小说网页的url地址，如https://www.wenku8.cc/book/3057.htm，然后运行以下代码
+复制wenku8小说网页的url地址，如 
 
-```
+> https://www.wenku8.cc/book/3057.htm   
+
+然后运行以下代码
+
+```(javascript)
 node ./index.js
 ```
 </li>
