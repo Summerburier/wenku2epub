@@ -3,7 +3,7 @@ const iconv = require('iconv-lite');
 const JsZip = require('jszip');
 const cheerio = require('cheerio');
 const fs = require('fs');
-let readline = require("readline");
+const prompt = require('prompt-sync')();
 const { DOMParser, XMLSerializer } = require('xmldom');
 const xmlFormatter = require('xml-formatter');
 const beautify = require('js-beautify').html;
@@ -377,7 +377,8 @@ async function scraper(url) {
 }
 
 // 调用主函数
-const url = 'https://www.wenku8.cc/book/3057.htm'; // 示例 URL
+url = prompt('请输入要下载的小说网址：');
+//const url = 'https://www.wenku8.cc/book/3057.htm'; // 示例 URL
 scraper(url);
 // 引入readline模块
 

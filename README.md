@@ -9,6 +9,7 @@
 <li>建立良好的封面数据库</li>
 <li>分卷</li>
 <li>生成epub2</li>
+<li>任何错误检查和error抛出，有可能下不了报错吧（doge）</li>
 
 ## 使用说明
 
@@ -34,11 +35,13 @@ git clone https://github.com/1324762577/wenku8EpubDownloader-Nodejs-.git
 
 > https://www.wenku8.cc/book/3057.htm   
 
+
 然后运行以下代码
 
 ```(javascript)
 node ./index.js
 ```
+输入刚才获得的地址
 </li>
 <li>
 稍等片刻便可在文件夹中看见生成的文件，这样就可以快乐观看了        
