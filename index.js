@@ -366,8 +366,6 @@ async function scraper(url) {
   let name="";
   await  getBookInfo(url, json);
   name = json.titles;
-
-  console.log(JSON.stringify(json, null, 2));
   let book = await creatEpub(json);
   book.generateAsync({ type: "nodebuffer" })
     .then(function (content) {
