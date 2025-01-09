@@ -341,7 +341,7 @@ async function creatNav(book, json) {
 // 创建 EPUB 文件
 async function creatEpub(json) {
   let book = new JsZip();
-  let img = fs.readFileSync('..\\cover.jpg');
+  let img = fs.readFileSync('.\\cover.jpg');
   book.file("mimetype", "application/epub+zip");
   book.folder("META-INF");
   book.file("META-INF/container.xml", container_xml);
@@ -378,7 +378,7 @@ async function scraper(url) {
 
 // 调用主函数
 url = prompt('请输入要下载的小说网址：');
-//const url = 'https://www.wenku8.cc/book/3057.htm'; // 示例 URL
+//const url = 'https://www.wenku8.net/book/2883.htm'; // 示例 URL
 scraper(url);
 // 引入readline模块
 
