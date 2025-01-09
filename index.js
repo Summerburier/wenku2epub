@@ -266,11 +266,6 @@ async function creatOpf(book, json) {
   itemcss.setAttribute("href", "Style/style.css");
   itemcss.setAttribute("media-type", "text/css");
   opf.getElementsByTagName('manifest')[0].appendChild(itemcss);
-  let itemttf = opf.createElement('item');
-  itemttf.setAttribute("id", "Pingfang Regular.ttf");
-  itemttf.setAttribute("href", "Font/PingFang Regular.ttf");
-  itemttf.setAttribute("media-type", "font/ttf");
-  opf.getElementsByTagName('manifest')[0].appendChild(itemttf);
   let item = opf.createElement('item');
   item.setAttribute("id", "nav");
   item.setAttribute("href", "nav.xhtml");
@@ -350,9 +345,7 @@ async function creatEpub(json) {
   book.file("OEBPS/Image/cover.jpg",img)  ;
   book.folder("OEBPS/Text");
   book.folder("OEBPS/Style");
-  book.folder("OEBPS/Font");
   book.file("OEBPS/Style/style.css", fs.readFileSync('style.css'));
-  book.file("OEBPS/Font/PingFang Regular.ttf", fs.readFileSync('.\\Pingfang\\PingFang Regular_0.ttf'));
   await creatNav(book, json);
   await creatText(book, json);
   await creatOpf(book, json);
