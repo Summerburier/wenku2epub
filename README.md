@@ -22,7 +22,7 @@
 获取软件
 
 ```
-git clone https://github.com/1324762577/wenku8EpubDownloader-Nodejs-.git
+https://github.com/1324762577/wenku8tepub.git
 ```
 </li>
 <li>
