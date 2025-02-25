@@ -22,7 +22,7 @@
 获取软件
 
 ```
-https://github.com/1324762577/wenku8tepub.git
+https://github.com/Summerburier/wenku2epub.git
 ```
 </li>
 <li>
