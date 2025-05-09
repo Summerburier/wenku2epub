@@ -208,7 +208,8 @@ async function creatText(book, json) {
         
         // 格式化 XHTML 内容
         const formattedXhtml = beautify(serializer.serializeToString(xhtml), { indent_size: 2 });
-
+        console.log(`Chapter ${volume}_${chapter} downloaded`);
+        // 将格式化后的 XHTML 内容添加到 EPUB 文件中
         book.file(`OEBPS/Text/${volume}_${chapter}.xhtml`, Buffer.from(iconv.encode(formattedXhtml, 'utf-8')));
         }
       }
