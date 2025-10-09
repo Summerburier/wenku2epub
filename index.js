@@ -4,10 +4,33 @@ const JsZip = require('jszip');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const prompt = require('prompt-sync')();
-const { DOMParser, XMLSerializer } = require('xmldom');
+const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
 const xmlFormatter = require('xml-formatter');
 const beautify = require('js-beautify').html;
-//container.xml文件内容
+
+// 引入 p-limit 控制并发（需提前安装：npm install p-limit）
+const { default: pLimit } = require('p-limit');
+
+// 添加延迟函数，用于控制请求频率
+async function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 随机 User-Agent 列表，提高反爬绕过能力
+function getRandomUserAgent() {
+  const uas = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+  ];
+  return uas[Math.floor(Math.random() * uas.length)];
+}
+
+// 定义最大并发请求数（图片下载）
+const imgLimit = pLimit(3);
+
+// container.xml 文件内容
 const container_xml = `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
     <rootfiles>
@@ -15,7 +38,8 @@ const container_xml = `<?xml version="1.0" encoding="UTF-8"?>
    </rootfiles>
 </container>
 `;
-//OPF文件内容
+
+// OPF 文件内容
 const content_opf = `<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="PrimaryID">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
@@ -31,13 +55,14 @@ const content_opf = `<?xml version="1.0" encoding="utf-8"?>
   </spine>
 </package>
 `;
-//XHTML文件内容
+
+// XHTML 文件模板
 const content_xhtml = `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <title></title>
-  <style type="text/css" src="../Style/style.css"></style>
+  <link rel="stylesheet" type="text/css" href="../Style/style.css" />
 </head>
 <body>
   <section>
@@ -46,16 +71,17 @@ const content_xhtml = `<?xml version="1.0" encoding="utf-8"?>
 </body>
 </html>
 `;
-// nav.xhtml 文件内容
-const nav_xhtml = `
-<?xml version="1.0" encoding="utf-8"?>
+
+// nav.xhtml 导航文件内容
+const nav_xhtml = `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN" xml:lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <title>ePub Nav</title>
     <style type="text/css">
-    ol { list-style-type: none; }
+      ol { list-style-type: none; margin: 0; padding: 0; }
+      li { margin: 0.2em 0; }
     </style>
   </head>
   <body epub:type="frontmatter">
@@ -64,31 +90,31 @@ const nav_xhtml = `
   </body>
 </html>`;
 
-
-// 获取网页内容的函数
+// 获取网页内容的函数（带延迟和随机 UA）
 async function ask(url) {
+  await delay(1000); // 每次请求间隔 1 秒
   try {
     const response = await axios.get(url, {
-        responseType: 'arraybuffer',
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Referer': 'https://www.google.com/',
-            'DNT': '1', // Do Not Track Request Header
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1'
-          }});
-    // 将响应数据转换为GBK编码的字符串
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Referer': 'https://www.wenku8.net/',
+        'DNT': '1',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1'
+      },
+      timeout: 10000
+    });
     const decodedData = iconv.decode(Buffer.from(response.data), 'GBK');
     return cheerio.load(decodedData);
-  
   } catch (error) {
-    console.error(`Error fetching the URL: ${error}`);
+    console.error(`Error fetching the URL ${url}:`, error.message);
     return null;
   }
 }
@@ -118,15 +144,14 @@ async function getBookInfo(url, json) {
       }
     });
 
-    json.titles = titles; // 标题
-    json.authors = authors; // 作者
-    json.intro = intro; // 简介
-    json.content = {}; // 章节内容
+    json.titles = titles;
+    json.authors = authors;
+    json.intro = intro || '暂无简介';
+    json.content = {};
     if (chapurl) {
       await getChapList(chapurl, json);
     }
   }
-
 }
 
 // 获取章节列表
@@ -136,243 +161,231 @@ async function getChapList(url, json) {
     let key;
     let p = 0;
     let v = -1;
-    const patt = new RegExp('(.*)index.htm');
+    const patt = /(.*)index\.htm/;
     const realur = patt.exec(url)[1];
+
     $('td').each((i, elem) => {
-        if($(elem).attr('class') === 'vcss') {
-            v++;
-            key = $(elem).text().trim();
-            json.content[v] = { volume: key, chapters: {} };
-            p = 0;
-        } else if($(elem).attr('class') === 'ccss') {
-          if($(elem).find('a').length) {
-            json.content[v].chapters[p] = {};
-            const link = $(elem).find('a').first();
-            if (link) {
-                const title = link.text().trim();
-                const href = realur + link.attr('href');
-                json.content[v].chapters[p] = { title, href };
-                p++;
-            }}
-    
+      const $elem = $(elem);
+      if ($elem.attr('class') === 'vcss') {
+        v++;
+        key = $elem.text().trim();
+        json.content[v] = { volume: key, chapters: {} };
+        p = 0;
+      } else if ($elem.attr('class') === 'ccss' && $elem.find('a').length > 0) {
+        const link = $elem.find('a').first();
+        const title = link.text().trim();
+        const href = realur + link.attr('href');
+        json.content[v].chapters[p] = { title, href };
+        p++;
+      }
+    });
   }
-});
-}
 }
 
-// 创建文本内容并添加到 EPUB 文件中
+// 下载并保存图片
+async function getImg(src, volume, chapter, j, book) {
+  const imgname = `${volume}_${chapter}_${j}.jpg`;
+  const imgpath = `OEBPS/Image/${imgname}`;
+  try {
+    const response = await axios.get(src, {
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Referer': 'https://www.wenku8.net/',
+        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+      },
+      timeout: 10000
+    });
+    book.file(imgpath, response.data);
+    console.log(`Image ${imgname} downloaded`);
+  } catch (error) {
+    console.error(`Failed to download image ${src}:`, error.message);
+  }
+}
+
+// 创建文本内容并添加到 EPUB 中
 async function creatText(book, json) {
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
   json.imgs = {};
   let imgcount = 0;
-  for (let key in json.content) {
-    let volume = key;
-    for (let i in json.content[key].chapters) {
-      let title = json.content[key].chapters[i].title;
-      let href = json.content[key].chapters[i].href;
-      let chapter = i;
-      let $ = await ask(href);
-      if ($) {
-        let content = $('div[id="content"]');
-        if (content.length) {
-          const xhtml = parser.parseFromString(content_xhtml, 'application/xhtml+xml');
-          xhtml.getElementsByTagName('title')[0].textContent = title;
-          xhtml.getElementsByTagName('h3')[0].textContent = title;
-          content.contents().each((index, element) => {
-            if (element.type === 'text'&&element.data.trim()!=='') {
-              
-              let p = xhtml.createElement('p');
-              p.textContent = $(element).text().trim();
-              xhtml.getElementsByTagName('section')[0].appendChild(p);
-            } else if (element.tagName === 'br') {
-              // 忽略 <br> 标签
-            } else {
-              
-            }
-          });
-          let imgs = content.find('img'); //获取图片
-          let imgPromises = [];
-          imgs.each(async (j, img) => {
-            let src = $(img).attr("src");
-            let imgname = `${volume}_${chapter}_${j}.jpg`;
-            json.imgs[imgcount] = { imgname };
-            imgcount++;
-            let imgtag = xhtml.createElement('img');
-            imgtag.setAttribute("src", `../Image/${imgname}`);
-            xhtml.getElementsByTagName('section')[0].appendChild(imgtag);
-            imgPromises.push(getImg(src, volume, chapter, j, book));
-          });
-          await Promise.all(imgPromises);
-        
-        
-        // 格式化 XHTML 内容
-        const formattedXhtml = beautify(serializer.serializeToString(xhtml), { indent_size: 2 });
-        console.log(`Chapter ${volume}_${chapter} downloaded`);
-        // 将格式化后的 XHTML 内容添加到 EPUB 文件中
-        book.file(`OEBPS/Text/${volume}_${chapter}.xhtml`, Buffer.from(iconv.encode(formattedXhtml, 'utf-8')));
+
+  for (const volume in json.content) {
+    for (const chapter in json.content[volume].chapters) {
+      const { title, href } = json.content[volume].chapters[chapter];
+      const $ = await ask(href);
+      if (!$) continue;
+
+      const content = $('#content');
+      if (!content.length) continue;
+
+      const xhtml = parser.parseFromString(content_xhtml, 'application/xhtml+xml');
+      xhtml.getElementsByTagName('title')[0].textContent = title;
+      xhtml.getElementsByTagName('h3')[0].textContent = title;
+
+      content.contents().each((index, element) => {
+        if (element.type === 'text' && element.data.trim() !== '') {
+          const p = xhtml.createElement('p');
+          p.textContent = $(element).text().trim();
+         xhtml.getElementsByTagName('section')[0].appendChild(p);
         }
-      }
+      });
+
+      const imgs = content.find('img');
+      const imgPromises = [];
+      imgs.each((j, img) => {
+        const src = $(img).attr('src');
+        if (!src) return;
+        const absSrc = new URL(src, href).href;
+        const imgname = `${volume}_${chapter}_${imgcount}.jpg`;
+        json.imgs[imgcount] = { imgname };
+
+        const imgTag = xhtml.createElement('img');
+        imgTag.setAttribute('src', `../Image/${imgname}`);
+        xhtml.getElementsByTagName('section')[0].appendChild(imgTag);
+
+        imgPromises.push(
+          imgLimit(() => getImg(absSrc, volume, chapter, imgcount++, book))
+        );
+      });
+
+      await Promise.all(imgPromises);
+
+      const formattedXhtml = beautify(serializer.serializeToString(xhtml), { indent_size: 2 });
+      book.file(`OEBPS/Text/${volume}_${chapter}.xhtml`, Buffer.from(iconv.encode(formattedXhtml, 'utf-8')));
+      console.log(`Chapter ${volume}_${chapter} processed`);
     }
   }
 }
-
-// 获取图像数据并保存到本地
-async function getImg(src, volume, chapter, j, book) {
-  let imgname = `${volume}_${chapter}_${j}.jpg`;
-  let imgpath = `OEBPS/Image/${imgname}`;
-  try{
-  const response = await axios.get(src, {
-    responseType: 'arraybuffer',
-    headers: {
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-      'Accept-Encoding': 'gzip, deflate, br, zstd',
-      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-      'Cache-Control': 'max-age=0',
-      'Priority': 'u=0, i',
-      'Sec-CH-UA': '"Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-      'Sec-CH-UA-Mobile': '?0',
-      'Sec-CH-UA-Platform': '"Windows"',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none',
-      'Sec-Fetch-User': '?1',
-      'Upgrade-Insecure-Requests': '1',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
-    }
-  });
-  book.file(imgpath, response.data);
-  console.log(`Image ${imgname} downloaded`);
-}catch (error) {
-    console.error(`Error fetching the image: ${error}`);
-  }
-}
-
-
 
 // 创建 OPF 文件
 async function creatOpf(book, json) {
-  let parser = new DOMParser();
-  let opf = parser.parseFromString(content_opf, "text/xml");
-  opf.getElementsByTagName("dc:title")[0].textContent = json.titles;
-  opf.getElementsByTagName("dc:creator")[0].textContent = json.authors;
-  opf.getElementsByTagName("dc:description")[0].textContent = json.intro;
-  let itemCover = opf.createElement('item');
-  itemCover.setAttribute("id", "cover");
-  itemCover.setAttribute("href", "Image/cover.jpg");
-  itemCover.setAttribute("media-type", "image/jpeg");
-  opf.getElementsByTagName('manifest')[0].appendChild(itemCover);
-  let itemcss = opf.createElement('item');
-  itemcss.setAttribute("id", "style.css");
-  itemcss.setAttribute("href", "Style/style.css");
-  itemcss.setAttribute("media-type", "text/css");
-  opf.getElementsByTagName('manifest')[0].appendChild(itemcss);
-  let item = opf.createElement('item');
-  item.setAttribute("id", "nav");
-  item.setAttribute("href", "nav.xhtml");
-  item.setAttribute("media-type", "application/xhtml+xml");
-  item.setAttribute("properties", "nav");
-  opf.getElementsByTagName('manifest')[0].appendChild(item);
- 
-  for (let key in json.content) {
-    let volume = key; 
-    for (let i in json.content[key].chapters) {
-      let chapter = i;
-      let item = opf.createElement('item');
-      item.setAttribute("id", `Text/${volume}_${chapter}.xhtml`);
-      item.setAttribute("href", `Text/${volume}_${chapter}.xhtml`);
-      item.setAttribute("media-type", "application/xhtml+xml");
-      opf.getElementsByTagName('manifest')[0].appendChild(item);
-      let itemref = opf.createElement('itemref');
-      itemref.setAttribute("idref", `Text/${volume}_${chapter}.xhtml`);
-      opf.getElementsByTagName('spine')[0].appendChild(itemref);
+  const parser = new DOMParser();
+  const opf = parser.parseFromString(content_opf, 'text/xml');
+
+  opf.getElementsByTagName('dc:title')[0].textContent = json.titles;
+  opf.getElementsByTagName('dc:creator')[0].textContent = json.authors;
+  opf.getElementsByTagName('dc:description')[0].textContent = json.intro;
+
+  // 添加封面、CSS、nav 等资源
+  const manifest = opf.getElementsByTagName('manifest')[0];
+  const spine = opf.getElementsByTagName('spine')[0];
+
+  const addItem = (id, href, mediaType, properties = null) => {
+    const item = opf.createElement('item');
+    item.setAttribute('id', id);
+    item.setAttribute('href', href);
+    item.setAttribute('media-type', mediaType);
+    if (properties) item.setAttribute('properties', properties);
+    manifest.appendChild(item);
+  };
+
+  addItem('cover', 'Image/cover.jpg', 'image/jpeg');
+  addItem('style.css', 'Style/style.css', 'text/css');
+  addItem('nav', 'nav.xhtml', 'application/xhtml+xml', 'nav');
+
+  // 添加章节和图片
+  for (const volume in json.content) {
+    for (const chapter in json.content[volume].chapters) {
+      addItem(`Text/${volume}_${chapter}.xhtml`, `Text/${volume}_${chapter}.xhtml`, 'application/xhtml+xml');
+      const itemref = opf.createElement('itemref');
+      itemref.setAttribute('idref', `Text/${volume}_${chapter}.xhtml`);
+      spine.appendChild(itemref);
     }
   }
-  for (let i in json.imgs) {
-    let img = json.imgs[i];
-    let item = opf.createElement('item');
-    item.setAttribute("id", `Image/${img.imgname}`);
-    item.setAttribute("href", `Image/${img.imgname}`);
-    item.setAttribute("media-type", "image/jpeg");
-    opf.getElementsByTagName('manifest')[0].appendChild(item);
+
+  for (const i in json.imgs) {
+    const { imgname } = json.imgs[i];
+    addItem(`Image/${imgname}`, `Image/${imgname}`, 'image/jpeg');
   }
 
-  // 格式化 OPF 内容
   const formattedOpf = xmlFormatter(new XMLSerializer().serializeToString(opf), { indentation: '  ' });
-  book.file("OEBPS/content.opf", formattedOpf);
+  book.file('OEBPS/content.opf', formattedOpf);
 }
-// 创建 nav.xhtml 文件
+
+// 创建导航文件 nav.xhtml
 async function creatNav(book, json) {
-  let parser = new DOMParser();
-  let serializer = new XMLSerializer();
-  let nav = parser.parseFromString(nav_xhtml, "text/xml");
-  let ol = nav.createElement("ol");
-  for (let key in json.content) {
-    let volume = key;
-    let li = nav.createElement("li");
-    let a = nav.createElement("a");
-    a.setAttribute("href", `Text/${volume}_0.xhtml`);
-    a.textContent = json.content[key].volume;
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const nav = parser.parseFromString(nav_xhtml, 'text/xml');
+  const ol = nav.createElement('ol');
+
+  for (const volume in json.content) {
+    const volData = json.content[volume];
+    const li = nav.createElement('li');
+    const a = nav.createElement('a');
+    a.setAttribute('href', `Text/${volume}_0.xhtml`);
+    a.textContent = volData.volume;
     li.appendChild(a);
-    let nestedOl = nav.createElement("ol");
-    for (let i in json.content[key].chapters) {
-      let chapter = i;
-      let nestedLi = nav.createElement("li");
-      let nestedA = nav.createElement("a");
-      nestedA.setAttribute("href", `Text/${volume}_${chapter}.xhtml`);
-      nestedA.textContent = json.content[key].chapters[i].title;
+
+    const nestedOl = nav.createElement('ol');
+    for (const chapter in volData.chapters) {
+      const chData = volData.chapters[chapter];
+      const nestedLi = nav.createElement('li');
+      const nestedA = nav.createElement('a');
+      nestedA.setAttribute('href', `Text/${volume}_${chapter}.xhtml`);
+      nestedA.textContent = chData.title;
       nestedLi.appendChild(nestedA);
       nestedOl.appendChild(nestedLi);
     }
     li.appendChild(nestedOl);
     ol.appendChild(li);
   }
-  nav.getElementById("toc").appendChild(ol);
+
+  nav.getElementById('toc').appendChild(ol);
   const formattedNav = beautify(serializer.serializeToString(nav), { indent_size: 2 });
-  book.file("OEBPS/nav.xhtml", Buffer.from(iconv.encode(formattedNav, 'utf-8')));
-
-
+  book.file('OEBPS/nav.xhtml', Buffer.from(iconv.encode(formattedNav, 'utf-8')));
 }
 
-// 创建 EPUB 文件
+// 创建完整 EPUB 压缩包
 async function creatEpub(json) {
-  let book = new JsZip();
-  let img = fs.readFileSync('.\\cover.jpg');
-  book.file("mimetype", "application/epub+zip");
-  book.folder("META-INF");
-  book.file("META-INF/container.xml", container_xml);
-  book.folder("OEBPS");
-  book.folder("OEBPS/Image");
-  book.file("OEBPS/Image/cover.jpg",img)  ;
-  book.folder("OEBPS/Text");
-  book.folder("OEBPS/Style");
-  book.file("OEBPS/Style/style.css", fs.readFileSync('style.css'));
+  const book = new JsZip();
+  const coverPath = './cover.jpg';
+
+  book.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+  book.folder('META-INF').file('container.xml', container_xml);
+  book.folder('OEBPS');
+  book.folder('OEBPS/Image');
+  book.folder('OEBPS/Text');
+  book.folder('OEBPS/Style');
+
+  // 添加封面和样式
+  if (fs.existsSync(coverPath)) {
+    book.file('OEBPS/Image/cover.jpg', fs.readFileSync(coverPath));
+  } else {
+    console.warn('未找到封面图片 cover.jpg');
+  }
+
+  if (fs.existsSync('style.css')) {
+    book.file('OEBPS/Style/style.css', fs.readFileSync('style.css'));
+  }
+
   await creatNav(book, json);
   await creatText(book, json);
   await creatOpf(book, json);
+
   return book;
 }
 
-
-// 导出主函数
+// 主入口函数
 async function scraper(url) {
-  let json ={} ;
-  let name="";
-  await  getBookInfo(url, json);
-  name = json.titles;
-  let book = await creatEpub(json);
-  book.generateAsync({ type: "nodebuffer" })
-    .then(function (content) {
-      fs.writeFileSync(`./${name}.epub`, content);
-      console.log('EPUB 文件已生成');
-    });
+  const json = {};
+  await getBookInfo(url, json);
+  if (!json.titles) {
+    console.error('未能获取书籍标题，可能网址无效或页面结构变化。');
+    return;
+  }
+
+  const book = await creatEpub(json);
+  return book.generateAsync({ type: 'nodebuffer' }).then(content => {
+    const filename = `${json.titles}.epub`.replace(/[<>:"/\\|?*]/g, '_'); // 清理非法文件名字符
+    fs.writeFileSync(filename, content);
+    console.log(`EPUB 文件已生成：${filename}`);
+  });
 }
 
-// 调用主函数
-url = prompt('请输入要下载的小说网址：');
-//const url = 'https://www.wenku8.net/book/2883.htm'; // 示例 URL
-scraper(url);
-// 引入readline模块
-
-
-
+// 启动交互式输入
+const url = prompt('请输入要下载的小说网址：');
+if (url) {
+  scraper(url).catch(err => console.error('程序出错：', err));
+}
