@@ -27,9 +27,9 @@ function getRandomUserAgent() {
   return uas[Math.floor(Math.random() * uas.length)];
 }
 
-// 定义最大并发请求数（图片下载）
+// 定义最大并发请求数
 const imgLimit = pLimit(3);
-
+const chapterLimit = pLimit(3);
 // container.xml 文件内容
 const container_xml = `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -203,59 +203,79 @@ async function getImg(src, volume, chapter, j, book) {
   }
 }
 
-// 创建文本内容并添加到 EPUB 中
+// 在文件顶部定义章节并发限制
+// 修改 creatText 函数
 async function creatText(book, json) {
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
   json.imgs = {};
-  let imgcount = 0;
+  
+  // 使用一个共享的图片计数器对象
+  const imgCounter = { count: 0 };
+
+  // 收集所有章节的处理任务
+  const chapterPromises = [];
 
   for (const volume in json.content) {
     for (const chapter in json.content[volume].chapters) {
       const { title, href } = json.content[volume].chapters[chapter];
-      const $ = await ask(href);
-      if (!$) continue;
-
-      const content = $('#content');
-      if (!content.length) continue;
-
-      const xhtml = parser.parseFromString(content_xhtml, 'application/xhtml+xml');
-      xhtml.getElementsByTagName('title')[0].textContent = title;
-      xhtml.getElementsByTagName('h3')[0].textContent = title;
-
-      content.contents().each((index, element) => {
-        if (element.type === 'text' && element.data.trim() !== '') {
-          const p = xhtml.createElement('p');
-          p.textContent = $(element).text().trim();
-         xhtml.getElementsByTagName('section')[0].appendChild(p);
-        }
-      });
-
-      const imgs = content.find('img');
-      const imgPromises = [];
-      imgs.each((j, img) => {
-        const src = $(img).attr('src');
-        if (!src) return;
-        const absSrc = new URL(src, href).href;
-        const imgname = `${volume}_${chapter}_${imgcount}.jpg`;
-        json.imgs[imgcount] = { imgname };
-
-        const imgTag = xhtml.createElement('img');
-        imgTag.setAttribute('src', `../Image/${imgname}`);
-        xhtml.getElementsByTagName('section')[0].appendChild(imgTag);
-
-        imgPromises.push(
-          imgLimit(() => getImg(absSrc, volume, chapter, imgcount++, book))
-        );
-      });
-
-      await Promise.all(imgPromises);
-
-      const formattedXhtml = beautify(serializer.serializeToString(xhtml), { indent_size: 2 });
-      book.file(`OEBPS/Text/${volume}_${chapter}.xhtml`, Buffer.from(iconv.encode(formattedXhtml, 'utf-8')));
-      console.log(`Chapter ${volume}_${chapter} processed`);
+      
+      // 使用并发控制器包装章节处理函数
+      const promise = chapterLimit(() => processChapter(book, json, volume, chapter, title, href, parser, serializer, imgCounter));
+      chapterPromises.push(promise);
     }
   }
+
+  // 等待所有章节处理完成
+  await Promise.all(chapterPromises);
+}
+
+// 抽离章节处理为独立函数
+async function processChapter(book, json, volume, chapter, title, href, parser, serializer, imgCounter) {
+  const $ = await ask(href);
+  if (!$) return;
+
+  const content = $('#content');
+  if (!content.length) return;
+
+  const xhtml = parser.parseFromString(content_xhtml, 'application/xhtml+xml');
+  xhtml.getElementsByTagName('title')[0].textContent = title;
+  xhtml.getElementsByTagName('h3')[0].textContent = title;
+
+  content.contents().each((index, element) => {
+    if (element.type === 'text' && element.data.trim() !== '') {
+      const p = xhtml.createElement('p');
+      p.textContent = $(element).text().trim();
+      xhtml.getElementsByTagName('section')[0].appendChild(p);
+    }
+  });
+
+  const imgs = content.find('img');
+  const imgPromises = [];
+  imgs.each((j, img) => {
+    const src = $(img).attr('src');
+    if (!src) return;
+    const absSrc = new URL(src, href).href;
+    
+    // 获取并递增图片计数
+    const currentImgCount = imgCounter.count++;
+    const imgname = `${volume}_${chapter}_${currentImgCount}.jpg`;
+    json.imgs[imgname] = { imgname };
+
+    const imgTag = xhtml.createElement('img');
+    imgTag.setAttribute('src', `../Image/${imgname}`);
+    xhtml.getElementsByTagName('section')[0].appendChild(imgTag);
+
+    imgPromises.push(
+      imgLimit(() => getImg(absSrc, volume, chapter, currentImgCount, book))
+    );
+  });
+
+  await Promise.all(imgPromises);
+
+  const formattedXhtml = beautify(serializer.serializeToString(xhtml), { indent_size: 2 });
+  book.file(`OEBPS/Text/${volume}_${chapter}.xhtml`, Buffer.from(iconv.encode(formattedXhtml, 'utf-8')));
+  console.log(`Chapter ${volume}_${chapter} processed`);
 }
 
 // 创建 OPF 文件
