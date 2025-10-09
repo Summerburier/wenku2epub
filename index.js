@@ -8,28 +8,45 @@ const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
 const xmlFormatter = require('xml-formatter');
 const beautify = require('js-beautify').html;
 
-// 引入 p-limit 控制并发（需提前安装：npm install p-limit）
+// 引入 p-limit 控制并发
 const { default: pLimit } = require('p-limit');
 
-// 添加延迟函数，用于控制请求频率
-async function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+// 降低并发数，从1开始测试
+const imgLimit = pLimit(3);
+const chapterLimit = pLimit(1);
+let delayOrNot = false; // 是否启用请求延迟
+// 随机延迟函数，避免规律性请求
+async function delay() {
+  // 基础延迟0.5秒，随机增加0-0.5秒，总延迟0.5-1秒
+  const baseDelay = 500;
+  const randomDelay = Math.floor(Math.random() * 500);
+  const totalDelay = baseDelay + randomDelay;
+  console.log(`等待 ${totalDelay}ms 后发送下一个请求...`);
+  return new Promise(resolve => setTimeout(resolve, totalDelay));
 }
 
-// 随机 User-Agent 列表，提高反爬绕过能力
+// 扩展User-Agent列表，增加多样性
 function getRandomUserAgent() {
   const uas = [
+    // PC端浏览器
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/130.0.0.0 Safari/537.36',
+    
+    // 移动端浏览器
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (Android 13; Mobile; rv:120.0) Gecko/120.0 Firefox/120.0',
+    'Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+    
+    // 小众浏览器
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Vivaldi/6.5.3206.53 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Brave/131.0.0.0 Safari/537.36'
   ];
   return uas[Math.floor(Math.random() * uas.length)];
 }
 
-// 定义最大并发请求数
-const imgLimit = pLimit(3);
-const chapterLimit = pLimit(3);
 // container.xml 文件内容
 const container_xml = `<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -90,33 +107,50 @@ const nav_xhtml = `<?xml version="1.0" encoding="utf-8"?>
   </body>
 </html>`;
 
-// 获取网页内容的函数（带延迟和随机 UA）
-async function ask(url) {
-  await delay(1000); // 每次请求间隔 1 秒
-  try {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': getRandomUserAgent(),
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Referer': 'https://www.wenku8.net/',
-        'DNT': '1',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1'
-      },
-      timeout: 10000
-    });
-    const decodedData = iconv.decode(Buffer.from(response.data), 'GBK');
-    return cheerio.load(decodedData);
-  } catch (error) {
-    console.error(`Error fetching the URL ${url}:`, error.message);
-    return null;
+// 带重试机制的请求函数，处理429错误
+async function fetchWithRetry(url, maxRetries = 3) {
+  for (let retry = 0; retry < maxRetries; retry++) {
+    try {
+      if (delayOrNot) await delay(); // 每次请求前先延迟
+      const response = await axios.get(url, {
+        responseType: 'arraybuffer',
+        headers: {
+          'User-Agent': getRandomUserAgent(),
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+          'Connection': 'keep-alive',
+          'Referer': 'https://www.wenku8.net/',
+          'DNT': '1',
+          'Upgrade-Insecure-Requests': '1',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'same-origin',
+          'Sec-Fetch-User': '?1'
+        },
+        timeout: 15000
+      });
+      
+      const decodedData = iconv.decode(Buffer.from(response.data), 'GBK');
+      return cheerio.load(decodedData);
+    } catch (error) {
+      // 处理429错误
+      if (error.response?.status === 429) {
+        // 从响应头获取建议的重试时间，默认5秒
+        const retryAfter = parseInt(error.response.headers['retry-after']) || 5;
+        console.warn(`请求 ${url} 被限流（429），将在 ${retryAfter} 秒后重试（第 ${retry+1}/${maxRetries} 次）`);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      } else {
+        console.error(`请求 ${url} 失败（非429）：`, error.message);
+        break;
+      }
+    }
   }
+  console.error(`请求 ${url} 重试 ${maxRetries} 次后仍失败`);
+  return null;
+}
+
+// 获取网页内容的函数（使用带重试的请求）
+async function ask(url) {
+  return fetchWithRetry(url);
 }
 
 // 获取小说信息
@@ -182,29 +216,42 @@ async function getChapList(url, json) {
   }
 }
 
-// 下载并保存图片
-async function getImg(src, volume, chapter, j, book) {
+// 带重试机制的图片下载函数
+async function getImgWithRetry(src, volume, chapter, j, book, maxRetries = 3) {
   const imgname = `${volume}_${chapter}_${j}.jpg`;
   const imgpath = `OEBPS/Image/${imgname}`;
-  try {
-    const response = await axios.get(src, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': getRandomUserAgent(),
-        'Referer': 'https://www.wenku8.net/',
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
-      },
-      timeout: 10000
-    });
-    book.file(imgpath, response.data);
-    console.log(`Image ${imgname} downloaded`);
-  } catch (error) {
-    console.error(`Failed to download image ${src}:`, error.message);
+  
+  for (let retry = 0; retry < maxRetries; retry++) {
+    try {
+      //await delay(); // 图片请求前的延迟
+      const response = await axios.get(src, {
+        responseType: 'arraybuffer',
+        headers: {
+          'User-Agent': getRandomUserAgent(),
+          'Referer': 'https://www.wenku8.net/',
+          'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+          // 已移除Cookie配置
+        },
+        timeout: 15000
+      });
+      book.file(imgpath, response.data);
+      console.log(`Image ${imgname} downloaded`);
+      return; // 下载成功，退出函数
+    } catch (error) {
+      if (error.response?.status === 429) {
+        const retryAfter = parseInt(error.response.headers['retry-after']) || 5;
+        console.warn(`图片 ${src} 被限流（429），将在 ${retryAfter} 秒后重试（第 ${retry+1}/${maxRetries} 次）`);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      } else {
+        console.error(`图片 ${src} 下载失败（非429）：`, error.message);
+        break;
+      }
+    }
   }
+  console.error(`图片 ${src} 重试 ${maxRetries} 次后仍失败`);
 }
 
-// 在文件顶部定义章节并发限制
-// 修改 creatText 函数
+// 创建章节文本内容
 async function creatText(book, json) {
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
@@ -230,7 +277,7 @@ async function creatText(book, json) {
   await Promise.all(chapterPromises);
 }
 
-// 抽离章节处理为独立函数
+// 章节处理函数
 async function processChapter(book, json, volume, chapter, title, href, parser, serializer, imgCounter) {
   const $ = await ask(href);
   if (!$) return;
@@ -267,7 +314,7 @@ async function processChapter(book, json, volume, chapter, title, href, parser, 
     xhtml.getElementsByTagName('section')[0].appendChild(imgTag);
 
     imgPromises.push(
-      imgLimit(() => getImg(absSrc, volume, chapter, currentImgCount, book))
+      imgLimit(() => getImgWithRetry(absSrc, volume, chapter, currentImgCount, book))
     );
   });
 
@@ -406,6 +453,17 @@ async function scraper(url) {
 
 // 启动交互式输入
 const url = prompt('请输入要下载的小说网址：');
+const delayChoice = prompt('是否启用请求延迟以防止报错？(y/n)：').toLowerCase();
+if (delayChoice === 'y') {
+  delayOrNot = true;
+}
+else if (delayChoice === 'n') {
+  delayOrNot = false;
+}
+else{
+  console.log('无效输入，默认不启用请求延迟。');
+  delayOrNot = false;
+}
 if (url) {
   scraper(url).catch(err => console.error('程序出错：', err));
 }
