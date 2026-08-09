@@ -118,7 +118,7 @@ async function fetchWithRetry(url, maxRetries = 3) {
           'User-Agent': getRandomUserAgent(),
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
           'Connection': 'keep-alive',
-          'Referer': 'https://www.wenku8.net/',
+          'Referer': new URL(url).origin + '/',
           'DNT': '1',
           'Upgrade-Insecure-Requests': '1',
           'Sec-Fetch-Dest': 'document',
@@ -228,7 +228,7 @@ async function getImgWithRetry(src, volume, chapter, j, book, maxRetries = 3) {
         responseType: 'arraybuffer',
         headers: {
           'User-Agent': getRandomUserAgent(),
-          'Referer': 'https://www.wenku8.net/',
+          'Referer': new URL(src).origin + '/',
           'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
           // 已移除Cookie配置
         },

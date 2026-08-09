@@ -1,56 +1,58 @@
-# 本软件用于下载wenku8.cc的轻小说
-## 目前已经实现的功能：
-<li>下载并生成epub3文件（可能有一些阅读器不支持）</li>
-<li>强制使用本地封面，暂不支持网络获取</li>
-<li>使用nodejs本地环境</li>
-<li>强制全书下载，不支持分卷</li>
+# wenku2epub 
 
-##  未实现的功能
-<li>建立良好的封面数据库</li>
-<li>分卷</li>
-<li>生成epub2</li>
-<li>任何错误检查和error抛出，有可能下不了报错吧（doge）</li>
+轻小说下载工具，用于将 wenku8.cc 的轻小说下载并生成 EPUB3 文件 (oﾟvﾟ)ノ
 
-## 使用说明
+## 功能 (｡･ω･)ﾉﾞ
 
-<ol>
-<li>
-首先要求有nodejs环境  
-建议从nodejs官网下载  
-</li>
-<li>
-获取软件
+- 下载并生成 EPUB3 文件
+- 强制使用本地封面
+- 强制全书下载
 
+## 未实现的功能 (´・ω・`)
+
+- 建立良好的封面数据库
+- 分卷下载
+- 生成 EPUB2
+- 错误检查（有可能下不了报错吧 d(￣ ￣)）
+
+## 使用说明 (｀・ω・´)
+
+### 1. 安装 Node.js
+
+从 [Node.js 官网](https://nodejs.org/) 下载并安装 Node.js。
+
+### 2. 获取代码 
+
+```bash
+git clone https://github.com/Summerburier/wenku2epub.git
 ```
-https://github.com/Summerburier/wenku2epub.git
+> ps: 如果有GitHub账号可以使用 SSH 克隆：
+```bash
+git clone git@github.com:Summerburier/wenku2epub.git
 ```
-</li>
-<li>
-切换到目标文件夹
-</li>
-<li>
-将你自己找到的封面放到文件夹根目录并命名为cover.jpg
-<li>
-复制wenku8小说网页的url地址，如 
 
-> https://www.wenku8.cc/book/3057.htm   
-
-
-然后运行以下代码
-
-```(javascript)
-node ./index.js
+```bash
+cd wenku2epub
 ```
-输入刚才获得的地址
-</li>
-<li>
-稍等片刻便可在文件夹中看见生成的文件，这样就可以快乐观看了        
 
- ☆*: .｡. o(≧▽≦)o .｡.:*☆
-</li>
-</ol>
+### 3. 安装依赖 
 
-ps:建议使用wenku8.cc域名，因为wenku8.net我没试过  
-(\*/ω＼\*)
+```bash
+npm install
+```
 
+### 4. 准备封面 
 
+将你的封面图片放到项目根目录，并命名为 `cover.jpg`。
+
+### 5. 运行 ヽ(✿ﾟ▽ﾟ)ノ
+
+```bash
+npm run start
+```
+
+输入 wenku8 小说网页的 URL 地址（如 `https://www.wenku8.cc/book/3057.htm`），稍等片刻即可在文件夹中找到生成的 EPUB 文件 (≧▽≦)/
+
+> 建议使用 wenku8.cc 域名，wenku8.net 经过测试和cc的效果差不多，但是针对中国移动用户可能无法访问。
+---
+*如果觉得好用，点个 star 支持一下吧！* ☆*: .｡. o(≧▽≦)o .｡.:*☆
