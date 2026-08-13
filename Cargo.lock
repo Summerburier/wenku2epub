@@ -1950,6 +1950,7 @@ dependencies = [
  "reqwest",
  "scraper",
  "tokio",
+ "url",
  "zip",
 ]
 
