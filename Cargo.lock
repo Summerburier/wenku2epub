@@ -287,6 +287,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "downloader"
+version = "2.0.0"
+
+[[package]]
 name = "dtoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1944,6 +1948,7 @@ name = "wenku2epub"
 version = "2.0.0"
 dependencies = [
  "dialoguer",
+ "downloader",
  "encoding_rs",
  "indicatif",
  "quick-xml",

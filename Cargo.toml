@@ -3,7 +3,12 @@ name = "wenku2epub"
 version = "2.0.0"
 edition = "2024"
 
+[workspace]
+members = ["downloader"]
+resolver = "2"
+
 [dependencies]
+downloader = { path = "downloader" }
 dialoguer = "0.12.0"
 encoding_rs = "0.8.35"
 indicatif = "0.18.6"
