@@ -15,14 +15,16 @@ Rust 编写（v2.0.0 起），JS 旧版请移步 v1.0.0 分支。
 
 在 [Releases](https://github.com/Summerburier/wenku2epub/releases) 页面下载对应系统的可执行文件：
 
-| 系统    | 文件               |可用状态|
-| ------- | ------------------ |--------|
-| Windows | `wenku2epub.exe` | ✅
-| macOS(x86)   | `wenku2epub`     | ❎
-| macOS(arm)   | `wenku2epub`     | ❎
-| Linux   | `wenku2epub`     | ❎
+| 系统        | 文件               | 可用状态 |
+| ----------- | ------------------ | -------- |
+| Windows     | `wenku2epub.exe` | ✅      |
+| macOS(x86)  | `wenku2epub`     | ❎       |
+| macOS(arm)  | `wenku2epub`     | ❎       |
+| Linux | `wenku2epub`     | ❎       |
 
 下载后直接双击（Windows）或命令行运行（macOS/Linux）即可，无需安装。
+
+PS：建议还是使用终端运行。Windows运行使用 .\wenku2epub.exe，防止报错
 
 ## 使用方法
 
@@ -52,7 +54,6 @@ Rust 编写（v2.0.0 起），JS 旧版请移步 v1.0.0 分支。
 **想用本地图片当封面？**
 
 选择封面来源 3，并把图片命名为 `cover.jpg`（或 `cover.png`、`cover.jpeg`、`cover.gif`、`cover.webp`、`cover.bmp`）放在程序所在目录即可。
-
 
 ## 自行编译（可选）
 
