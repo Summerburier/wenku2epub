@@ -8,7 +8,7 @@ wenku8轻小说文库原生不提供epub格式下载，只提供了TXT, UMD, JAR
 
 详细的EPUB3.x标准格式请参考[EPUB 3.3](https://www.w3.org/TR/epub-33/)
 
-详细的EPUB2.x标准格式请参考[EPUB2.0.1](https://idpf.org/epub/20/spec/OPS_2.0_latest.htm)
+详细的EPUB2.x标准格式请参考[EPUB 2.0.1](https://idpf.org/epub/20/spec/OPS_2.0_latest.htm)
 
 wenku8轻小说文库可获取的基本信息有：书名，作者，文库，封面，简介，卷名，章节名等。
 
