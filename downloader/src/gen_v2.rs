@@ -45,6 +45,12 @@ fn build_opf(book: &Book) -> String {
         ));
     }
 
+    let publisher = if book.library.is_empty() {
+        String::new()
+    } else {
+        format!("    <dc:publisher>{}</dc:publisher>\n", escape_xml(&book.library))
+    };
+
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="PrimaryID">
@@ -53,7 +59,7 @@ fn build_opf(book: &Book) -> String {
     <dc:identifier opf:scheme="ISBN"/>
     <dc:language>zh-CN</dc:language>
     <dc:creator>{author}</dc:creator>
-    <dc:description>{intro}</dc:description>
+{publisher}    <dc:description>{intro}</dc:description>
   </metadata>
   <manifest>
 {manifest}  </manifest>
