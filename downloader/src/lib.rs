@@ -1,3 +1,10 @@
+pub mod book;
+pub mod client;
+pub mod cover;
 pub mod error;
+pub mod gen_v2;
+pub mod gen_v3;
+pub mod manager;
 pub mod model;
 pub mod parser;
+pub mod protocol;

@@ -5,7 +5,7 @@ pub struct Error {
     /// 错误信息
     pub message: String,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ErrorKind {
     /// 网络错误
     Network,
@@ -28,8 +28,16 @@ impl Error {
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
+        match self.kind {
+            ErrorKind::Network => write!(f, "网络错误: {}", self.message),
+            ErrorKind::Parse => write!(f, "解析错误: {}", self.message),
+            ErrorKind::Encode => write!(f, "编码错误: {}", self.message),
+            ErrorKind::NotFound => write!(f, "未找到: {}", self.message),
+            ErrorKind::Cancelled => write!(f, "已取消: {}", self.message),
+        }
     }
 }
 
 impl std::error::Error for Error {}
+
+pub type Result<T> = std::result::Result<T, Error>;

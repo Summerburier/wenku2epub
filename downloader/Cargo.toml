@@ -1,6 +1,13 @@
 [package]
 name = "downloader"
-version = "2.0.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
+encoding_rs = "0.8.35"
+quick-xml = "0.41.0"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+scraper = "0.27.0"
+tokio = { version = "1.53.1", features = ["full"] }
+url = "2.5"
+zip = "8.6.0"
