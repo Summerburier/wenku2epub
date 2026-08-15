@@ -53,6 +53,7 @@ fn build_opf(book: &Book) -> String {
     <dc:identifier opf:scheme="ISBN"/>
     <dc:language>zh-CN</dc:language>
     <dc:creator>{author}</dc:creator>
+    <dc:publisher>{publisher}</dc:publisher>
     <dc:description>{intro}</dc:description>
   </metadata>
   <manifest>
@@ -63,6 +64,7 @@ fn build_opf(book: &Book) -> String {
 "#,
         title = escape_xml(&book.title),
         author = escape_xml(&book.author),
+        publisher = escape_xml(&book.library),
         intro = escape_xml(&book.intro),
     )
 }
