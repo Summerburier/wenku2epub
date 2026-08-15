@@ -23,6 +23,8 @@ Rust 编写（v2.0.0 起），JS 旧版请移步 v1.0.0 分支。
 
 下载后直接双击（Windows）或命令行运行（macOS/Linux）即可，无需安装。
 
+PS：建议还是使用终端运行。Windows运行使用 .\wenku2epub.exe，防止报错
+
 ## 使用方法
 
 启动程序后，按提示依次操作：
@@ -51,7 +53,6 @@ Rust 编写（v2.0.0 起），JS 旧版请移步 v1.0.0 分支。
 **想用本地图片当封面？**
 
 选择封面来源 3，并把图片命名为 `cover.jpg`（或 `cover.png`、`cover.jpeg`、`cover.gif`、`cover.webp`、`cover.bmp`）放在程序所在目录即可。
-
 
 ## 自行编译（可选）
 
