@@ -9,7 +9,7 @@ use crate::book::{self, EpubVersion};
 use crate::client::build_client;
 use crate::cover::CoverSource;
 use crate::error::{ErrorKind, Result};
-use crate::model::{Progress, Selection, Stage};
+use crate::model::{Progress, Selection, Stage, TitleStyle};
 use crate::protocol::{
     Command, CommandOutcome, Event, EventSink, JobId, JobSnapshot, JobStatus,
 };
@@ -20,6 +20,8 @@ pub struct Job {
     pub url: String,
     pub selection: Selection,
     pub version: EpubVersion,
+    /// 书名格式：完整 / 括号内翻译名 / 括号前部分
+    pub title_style: TitleStyle,
     pub status: JobStatus,
     pub progress: Arc<Progress>,
     pub result_path: Option<String>,
@@ -88,8 +90,9 @@ impl DownloadManager {
                 url,
                 selection,
                 version,
+                title_style,
             } => {
-                let job_id = self.create_job(url, selection, version);
+                let job_id = self.create_job(url, selection, version, title_style);
                 Ok(CommandOutcome::Created(job_id))
             }
             Command::StartJob { job_id } => {
@@ -112,13 +115,20 @@ impl DownloadManager {
         }
     }
 
-    fn create_job(&self, url: String, selection: Selection, version: EpubVersion) -> JobId {
+    fn create_job(
+        &self,
+        url: String,
+        selection: Selection,
+        version: EpubVersion,
+        title_style: TitleStyle,
+    ) -> JobId {
         let job_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let job = Job {
             id: job_id,
             url: url.clone(),
             selection,
             version,
+            title_style,
             status: JobStatus::Queued,
             progress: Arc::new(Progress::default()),
             result_path: None,
@@ -136,7 +146,7 @@ impl DownloadManager {
     }
 
     async fn start_job(&self, job_id: JobId) {
-        let (url, selection, version, progress) = {
+        let (url, selection, version, title_style, progress) = {
             let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
             let job = match jobs.get_mut(&job_id) {
                 Some(j) => j,
@@ -150,6 +160,7 @@ impl DownloadManager {
                 job.url.clone(),
                 job.selection.clone(),
                 job.version,
+                job.title_style,
                 job.progress.clone(),
             )
         };
@@ -175,6 +186,7 @@ impl DownloadManager {
                 concurrency,
                 image_concurrency,
                 version,
+                title_style,
                 cover_source,
                 &progress,
             )

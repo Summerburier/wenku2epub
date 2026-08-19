@@ -149,6 +149,7 @@ pub async fn generate_book(
     concurrency: usize,
     image_concurrency: usize,
     version: EpubVersion,
+    title_style: crate::model::TitleStyle,
     cover_source: CoverSource,
     progress: &Arc<Progress>,
 ) -> Result<BookResult> {
@@ -158,6 +159,10 @@ pub async fn generate_book(
     let html = fetch_html(client, url).await?;
     let mut book = Book::default();
     parse_book_info(&html, url, &mut book)?;
+    book.title = crate::parser::apply_title_style(
+        &crate::parser::parse_title(&book.title),
+        title_style,
+    );
 
     // 2. 解析目录
     progress.set_stage(Stage::ParseToc);
