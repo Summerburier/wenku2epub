@@ -1,0 +1,55 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset_name: wenku2epub-windows-x64.exe
+            binary_path: target/release/wenku2epub.exe
+          - os: ubuntu-latest
+            asset_name: wenku2epub-linux-x64
+            binary_path: target/release/wenku2epub
+          - os: macos-latest
+            asset_name: wenku2epub-macos-arm64
+            binary_path: target/release/wenku2epub
+          - os: macos-latest
+            asset_name: wenku2epub-macos-x64
+            binary_path: target/x86_64-apple-darwin/release/wenku2epub
+            cross_target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cross_target }}
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.cross_target }}" != "" ]; then
+            cargo build --release --target ${{ matrix.cross_target }}
+          else
+            cargo build --release
+          fi
+        shell: bash
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.binary_path }}
+          name: ${{ matrix.asset_name }}
