@@ -58,6 +58,30 @@ fn choose_version() -> Result<EpubVersion> {
     }
 }
 
+/// 展示解析出的书名，选择书名格式（完整 / 括号内 / 括号前）
+fn choose_title_style(parts: &downloader::parser::TitleParts) -> Result<downloader::model::TitleStyle> {
+    println!("{} 解析到书名：{}", success_mark("◆"), success(&parts.full));
+    println!("{}", menu_title("请选择书名格式："));
+    println!("  {} {}", option("1."), "完整书名（保留括号，默认）");
+    if let Some(inner) = &parts.in_bracket {
+        println!("  {} 括号中的书名：{}", option("2."), success(inner));
+    } else {
+        println!("  {} 括号中的书名（无括号）", option("2."));
+    }
+    if let Some(before) = &parts.before_bracket {
+        println!("  {} 括号前的书名：{}", option("3."), success(before));
+    } else {
+        println!("  {} 括号前的书名（无括号）", option("3."));
+    }
+    let choice = read_line("请输入序号 (1/2/3，默认 1)：")?;
+    match choice.as_str() {
+        "" | "1" => Ok(downloader::model::TitleStyle::Full),
+        "2" => Ok(downloader::model::TitleStyle::InBracket),
+        "3" => Ok(downloader::model::TitleStyle::BeforeBracket),
+        _ => Err(Error::new(ErrorKind::Parse, "无效的书名选择".into())),
+    }
+}
+
 /// 事件输出：只打印创建事件（任务结果由主循环统一打印，避免打断进度条）
 struct CliSink;
 
@@ -102,6 +126,15 @@ async fn main() -> Result<()> {
     if url.is_empty() {
         return Err(Error::new(ErrorKind::NotFound, "网址不能为空".into()));
     }
+
+    // 预解析书页，展示书名供用户选择格式
+    let client = downloader::client::build_client()?;
+    let html = downloader::client::fetch_html(&client, &url).await?;
+    let mut book = downloader::model::Book::default();
+    downloader::parser::parse_book_info(&html, &url, &mut book)?;
+    let title_parts = downloader::parser::parse_title(&book.title);
+    let title_style = choose_title_style(&title_parts)?;
+
     let cover_source = choose_cover_source()?;
     let version = choose_version()?;
 
@@ -113,6 +146,7 @@ async fn main() -> Result<()> {
             url: url.clone(),
             selection: Selection::All,
             version,
+            title_style,
         })
         .await?
     {

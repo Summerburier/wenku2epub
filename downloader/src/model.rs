@@ -53,6 +53,23 @@ impl Default for Selection {
     }
 }
 
+/// 书名格式选择
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleStyle {
+    /// 完整书名（保留括号）
+    Full,
+    /// 仅括号中的翻译名
+    InBracket,
+    /// 括号前的部分
+    BeforeBracket,
+}
+
+impl Default for TitleStyle {
+    fn default() -> Self {
+        Self::Full
+    }
+}
+
 /// EPUB 包内的一个文件条目
 #[derive(Debug, Clone)]
 pub struct EpubFile {

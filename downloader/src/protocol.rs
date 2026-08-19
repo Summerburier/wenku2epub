@@ -1,5 +1,5 @@
 use crate::book::EpubVersion;
-use crate::model::{Selection, Stage};
+use crate::model::{Selection, Stage, TitleStyle};
 
 /// 任务 ID
 pub type JobId = u64;
@@ -12,6 +12,8 @@ pub enum Command {
         url: String,
         selection: Selection,
         version: EpubVersion,
+        /// 书名格式：完整 / 括号内翻译名 / 括号前部分
+        title_style: TitleStyle,
     },
     /// 开始执行任务
     StartJob { job_id: JobId },

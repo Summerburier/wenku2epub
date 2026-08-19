@@ -4,6 +4,59 @@ use url::Url;
 use crate::error::{Error, ErrorKind, Result};
 use crate::model::{Book, Chapter, Volume};
 
+/// 书名解析结果：按括号拆出三种格式
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleParts {
+    /// 完整书名（保留括号）
+    pub full: String,
+    /// 括号内的翻译名（无括号则为 None）
+    pub in_bracket: Option<String>,
+    /// 括号前的部分（无括号则为 None）
+    pub before_bracket: Option<String>,
+}
+
+/// 解析书名结构，如 "最强废渣皇子暗中活跃于帝位之争(最强出涸皇子的暗跃帝位争夺)"。
+/// 支持中文括号（）与英文括号()；只取第一对括号；括号为空视为无括号。
+pub fn parse_title(title: &str) -> TitleParts {
+    let full = title.to_string();
+    for (open, close) in [('（', '）'), ('(', ')')] {
+        if let Some(start) = title.find(open) {
+            let after = &title[start + open.len_utf8()..];
+            if let Some(end) = after.find(close) {
+                let inner = after[..end].trim();
+                if !inner.is_empty() {
+                    let before = title[..start].trim();
+                    return TitleParts {
+                        full,
+                        in_bracket: Some(inner.to_string()),
+                        before_bracket: (!before.is_empty()).then(|| before.to_string()),
+                    };
+                }
+            }
+        }
+    }
+    TitleParts {
+        full,
+        in_bracket: None,
+        before_bracket: None,
+    }
+}
+
+/// 按书名格式选择应用书名
+pub fn apply_title_style(parts: &TitleParts, style: crate::model::TitleStyle) -> String {
+    match style {
+        crate::model::TitleStyle::Full => parts.full.clone(),
+        crate::model::TitleStyle::InBracket => parts
+            .in_bracket
+            .clone()
+            .unwrap_or_else(|| parts.full.clone()),
+        crate::model::TitleStyle::BeforeBracket => parts
+            .before_bracket
+            .clone()
+            .unwrap_or_else(|| parts.full.clone()),
+    }
+}
+
 /// 递归收集元素内文本，<br> 转成换行，保留段落结构
 fn element_text_with_breaks(el: ElementRef) -> String {
     let mut out = String::new();
