@@ -19,9 +19,9 @@ Rust 编写（v2.0.0 起），JS 旧版请移步 v1.0.0 分支。
 | 系统       | 文件               | 可用状态 |
 | ---------- | ------------------ | -------- |
 | Windows    | `wenku2epub.exe` | ✅       |
-| macOS(x86) | `wenku2epub`     | ❎       |
-| macOS(arm) | `wenku2epub`     | ❎       |
-| Linux      | `wenku2epub`     | ❎       |
+| macOS(x86) | `wenku2epub`     | ✅       |
+| macOS(arm) | `wenku2epub`     | ✅       |
+| Linux      | `wenku2epub`     | ✅       |
 
 下载后直接双击（Windows）或命令行运行（macOS/Linux）即可，无需安装。
 
