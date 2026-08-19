@@ -68,7 +68,8 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
+      # 只把产物追加到网页端手动创建的 release，不自动创建 release
+      - name: Upload binaries to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" artifacts/* --clobber
