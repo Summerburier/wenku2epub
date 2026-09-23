@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
+use console::{Key, Term, style};
 use downloader::book::EpubVersion;
 use downloader::cover::CoverSource;
 use downloader::error::{Error, ErrorKind, Result};
@@ -13,9 +14,88 @@ use downloader::protocol::{Command, CommandOutcome, Event, EventSink, JobStatus}
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use color::{
-    cancel_mark, failure, failure_mark, menu_title, option, prompt, success, success_mark,
-    title,
+    cancel_mark, failure, failure_mark, menu_title, option, prompt, success, success_mark, title,
 };
+
+/// 使用方向键移动、空格选择、Enter 确认的终端单选菜单。
+fn select_option(title_text: &str, choices: &[String], default: usize) -> Result<usize> {
+    debug_assert!(!choices.is_empty());
+    debug_assert!(default < choices.len());
+
+    let term = Term::stdout();
+    let mut cursor = default;
+    let mut selected = default;
+    let line_count = choices.len() + 1;
+
+    term.hide_cursor()
+        .map_err(|e| Error::new(ErrorKind::Encode, format!("隐藏光标失败: {e}")))?;
+
+    let selection_result = (|| -> Result<usize> {
+        loop {
+            term.write_line(&menu_title(title_text))
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("写入菜单失败: {e}")))?;
+
+            for (index, label) in choices.iter().enumerate() {
+                let pointer = if index == cursor {
+                    option("❯")
+                } else {
+                    " ".into()
+                };
+                let marker = if index == selected {
+                    success_mark("●")
+                } else {
+                    "○".into()
+                };
+                let label = if index == cursor {
+                    style(label).bold().to_string()
+                } else {
+                    label.clone()
+                };
+                term.write_line(&format!("  {pointer} {marker} {label}"))
+                    .map_err(|e| Error::new(ErrorKind::Encode, format!("写入选项失败: {e}")))?;
+            }
+
+            match term
+                .read_key()
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("读取按键失败: {e}")))?
+            {
+                Key::ArrowUp => cursor = (cursor + choices.len() - 1) % choices.len(),
+                Key::ArrowDown => cursor = (cursor + 1) % choices.len(),
+                Key::Char(' ') => selected = cursor,
+                Key::Enter => break Ok(selected),
+                Key::Escape => {
+                    break Err(Error::new(ErrorKind::Cancelled, "用户取消了选择".into()));
+                }
+                _ => {}
+            }
+
+            term.clear_last_lines(line_count)
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("刷新菜单失败: {e}")))?;
+        }
+    })();
+
+    let show_cursor_result = term.show_cursor();
+    match selection_result {
+        Ok(index) => {
+            term.clear_last_lines(line_count)
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("收起菜单失败: {e}")))?;
+            term.write_line(&format!(
+                "{} {} {}",
+                success_mark("◆"),
+                title_text.trim_end_matches('：'),
+                success(&choices[index])
+            ))
+            .map_err(|e| Error::new(ErrorKind::Encode, format!("写入选择结果失败: {e}")))?;
+            show_cursor_result
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("恢复光标失败: {e}")))?;
+            Ok(index)
+        }
+        Err(error) => {
+            let _ = show_cursor_result;
+            Err(error)
+        }
+    }
+}
 
 /// 读取一行输入
 fn read_line(prompt_text: &str) -> Result<String> {
@@ -32,53 +112,50 @@ fn read_line(prompt_text: &str) -> Result<String> {
 
 /// 选择封面类型
 fn choose_cover_source() -> Result<CoverSource> {
-    println!("{}", menu_title("请选择封面来源："));
-    println!("  {} {}", option("1."), "轻小说文库封面");
-    println!("  {} {}", option("2."), "第一卷的第一张图片");
-    println!("  {} {}", option("3."), "当前目录的 cover.jpg/png 等图片");
-    let choice = read_line("请输入序号 (1/2/3，默认 1)：")?;
-    match choice.as_str() {
-        "" | "1" => Ok(CoverSource::BookUrl),
-        "2" => Ok(CoverSource::FirstImage),
-        "3" => Ok(CoverSource::LocalFile),
-        _ => Err(Error::new(ErrorKind::Parse, "无效的封面选择".into())),
+    let choices = [
+        "轻小说文库封面",
+        "第一卷的第一张图片",
+        "当前目录的 cover.jpg/png 等图片",
+    ]
+    .map(str::to_owned);
+    match select_option("请选择封面来源：", &choices, 0)? {
+        0 => Ok(CoverSource::BookUrl),
+        1 => Ok(CoverSource::FirstImage),
+        _ => Ok(CoverSource::LocalFile),
     }
 }
 
 /// 选择 EPUB 版本
 fn choose_version() -> Result<EpubVersion> {
-    println!("{}", menu_title("请选择 EPUB 版本："));
-    println!("  {} {}", option("1."), "EPUB 2 (toc.ncx)");
-    println!("  {} {}", option("2."), "EPUB 3 (nav.xhtml)");
-    let choice = read_line("请输入序号 (1/2，默认 2)：")?;
-    match choice.as_str() {
-        "" | "2" => Ok(EpubVersion::V3),
-        "1" => Ok(EpubVersion::V2),
-        _ => Err(Error::new(ErrorKind::Parse, "无效的版本选择".into())),
+    let choices = ["EPUB 2 (toc.ncx)", "EPUB 3 (nav.xhtml)"].map(str::to_owned);
+    match select_option("请选择 EPUB 版本：", &choices, 1)? {
+        0 => Ok(EpubVersion::V2),
+        _ => Ok(EpubVersion::V3),
     }
 }
 
 /// 展示解析出的书名，选择书名格式（完整 / 括号内 / 括号前）
-fn choose_title_style(parts: &downloader::parser::TitleParts) -> Result<downloader::model::TitleStyle> {
+fn choose_title_style(
+    parts: &downloader::parser::TitleParts,
+) -> Result<downloader::model::TitleStyle> {
     println!("{} 解析到书名：{}", success_mark("◆"), success(&parts.full));
-    println!("{}", menu_title("请选择书名格式："));
-    println!("  {} {}", option("1."), "完整书名（保留括号，默认）");
-    if let Some(inner) = &parts.in_bracket {
-        println!("  {} 括号中的书名：{}", option("2."), success(inner));
-    } else {
-        println!("  {} 括号中的书名（无括号）", option("2."));
-    }
-    if let Some(before) = &parts.before_bracket {
-        println!("  {} 括号前的书名：{}", option("3."), success(before));
-    } else {
-        println!("  {} 括号前的书名（无括号）", option("3."));
-    }
-    let choice = read_line("请输入序号 (1/2/3，默认 1)：")?;
-    match choice.as_str() {
-        "" | "1" => Ok(downloader::model::TitleStyle::Full),
-        "2" => Ok(downloader::model::TitleStyle::InBracket),
-        "3" => Ok(downloader::model::TitleStyle::BeforeBracket),
-        _ => Err(Error::new(ErrorKind::Parse, "无效的书名选择".into())),
+    let choices = [
+        format!("完整书名：{}", parts.full),
+        parts
+            .in_bracket
+            .as_ref()
+            .map(|value| format!("括号中的书名：{value}"))
+            .unwrap_or_else(|| "括号中的书名（无括号）".into()),
+        parts
+            .before_bracket
+            .as_ref()
+            .map(|value| format!("括号前的书名：{value}"))
+            .unwrap_or_else(|| "括号前的书名（无括号）".into()),
+    ];
+    match select_option("请选择书名格式：", &choices, 0)? {
+        0 => Ok(downloader::model::TitleStyle::Full),
+        1 => Ok(downloader::model::TitleStyle::InBracket),
+        _ => Ok(downloader::model::TitleStyle::BeforeBracket),
     }
 }
 
@@ -88,10 +165,7 @@ struct CliSink;
 impl EventSink for CliSink {
     fn emit(&self, event: Event) {
         if let Event::JobCreated { job_id, url } = event {
-            println!(
-                "{} 小说 #{job_id} 已创建：{url}",
-                success_mark("◆")
-            );
+            println!("{} 小说 #{job_id} 已创建：{url}", success_mark("◆"));
         }
     }
 }
@@ -122,6 +196,7 @@ fn stage_message(job: &downloader::protocol::JobSnapshot) -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("{}", title("========== wenku2epub 小说下载器 =========="));
+    println!("{}", prompt("提示：使用 ↑/↓ 移动，空格选择，Enter 确认"));
     let url = read_line("请输入要下载的小说网址：")?;
     if url.is_empty() {
         return Err(Error::new(ErrorKind::NotFound, "网址不能为空".into()));
@@ -153,9 +228,7 @@ async fn main() -> Result<()> {
         CommandOutcome::Created(id) => id,
         _ => return Err(Error::new(ErrorKind::Encode, "创建小说失败".into())),
     };
-    manager
-        .dispatch(Command::StartJob { job_id })
-        .await?;
+    manager.dispatch(Command::StartJob { job_id }).await?;
 
     // 状态文本行 + 进度条行（分行显示，进度条不会因消息长度左右移动）
     let mp = MultiProgress::new();
