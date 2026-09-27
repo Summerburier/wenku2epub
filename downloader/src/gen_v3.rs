@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::model::{escape_xml, Book, EpubFile};
 
 /// 生成 EPUB3 的 content.opf 和 nav.xhtml
-pub fn generate(book: &Book) -> Result<Vec<EpubFile>> {
+pub fn generate(book: &Book, flatten_toc: bool) -> Result<Vec<EpubFile>> {
     let mut files = Vec::new();
     files.push(EpubFile {
         path: "OEBPS/content.opf".into(),
@@ -10,7 +10,7 @@ pub fn generate(book: &Book) -> Result<Vec<EpubFile>> {
     });
     files.push(EpubFile {
         path: "OEBPS/nav.xhtml".into(),
-        bytes: build_nav(book).into_bytes(),
+        bytes: build_nav(book, flatten_toc).into_bytes(),
     });
     Ok(files)
 }
@@ -71,9 +71,18 @@ fn build_opf(book: &Book) -> String {
     )
 }
 
-fn build_nav(book: &Book) -> String {
+fn build_nav(book: &Book, flatten_toc: bool) -> String {
     let mut items = String::new();
     for (vi, vol) in book.volumes.iter().enumerate() {
+        if flatten_toc {
+            for (ci, ch) in vol.chapters.iter().enumerate() {
+                items.push_str(&format!(
+                    "    <li><a href=\"Text/{vi}_{ci}.xhtml\">{}</a></li>\n",
+                    escape_xml(&ch.title)
+                ));
+            }
+            continue;
+        }
         items.push_str(&format!(
             "    <li><a href=\"Text/{vi}_0.xhtml\">{}</a>\n",
             escape_xml(&vol.name)
@@ -109,4 +118,29 @@ fn build_nav(book: &Book) -> String {
 </html>
 "#,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_nav;
+    use crate::model::{Book, Chapter, Volume};
+
+    #[test]
+    fn flat_nav_has_chapters_without_a_volume_parent() {
+        let book = Book {
+            volumes: vec![Volume {
+                name: "第一卷".to_owned(),
+                chapters: vec![Chapter {
+                    title: "序章".to_owned(),
+                    url: String::new(),
+                }],
+            }],
+            ..Book::default()
+        };
+
+        let nav = build_nav(&book, true);
+        assert!(nav.contains(">序章</a></li>"));
+        assert!(!nav.contains(">第一卷</a>"));
+        assert_eq!(nav.matches("<ol>").count(), 1);
+    }
 }

@@ -7,10 +7,12 @@ use reqwest::Client;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::client::{fetch_bytes, fetch_html};
-use crate::cover::{resolve_cover, CoverSource};
+use crate::client::{AdaptiveLimiter, fetch_bytes_limited, fetch_html_limited};
+use crate::cover::{CoverSource, resolve_cover};
 use crate::error::{Error, ErrorKind, Result};
-use crate::model::{escape_xml, sanitize_filename, Book, Chapter, EpubFile, Progress, Selection, Stage};
+use crate::model::{
+    Book, Chapter, EpubFile, Progress, Selection, Stage, escape_xml, sanitize_filename,
+};
 use crate::parser::{parse_book_info, parse_chapter, parse_toc};
 use crate::{gen_v2, gen_v3};
 
@@ -64,6 +66,20 @@ fn build_chapter_xhtml(title: &str, paragraphs: &[String], image_names: &[String
 fn apply_selection(mut book: Book, selection: &Selection) -> Result<Book> {
     match selection {
         Selection::All => {}
+        Selection::Volume(index) => {
+            if *index >= book.volumes.len() {
+                return Err(Error::new(
+                    ErrorKind::NotFound,
+                    format!("未找到第 {} 卷", index + 1),
+                ));
+            }
+            book.volumes = book
+                .volumes
+                .drain(..)
+                .enumerate()
+                .filter_map(|(volume_index, volume)| (volume_index == *index).then_some(volume))
+                .collect();
+        }
         Selection::Range { start, end } => {
             if *start == 0 || end < start {
                 return Err(Error::new(ErrorKind::NotFound, "无效的章节区间".into()));
@@ -116,6 +132,13 @@ fn apply_selection(mut book: Book, selection: &Selection) -> Result<Book> {
     Ok(book)
 }
 
+fn title_for_selection(base_title: String, selection: &Selection) -> String {
+    match selection {
+        Selection::Volume(index) => format!("{base_title}{}", index + 1),
+        _ => base_title,
+    }
+}
+
 /// 打包 EPUB 文件清单为 zip 字节（mimetype 必须第一个且 STORE）
 fn pack_epub(files: &[EpubFile]) -> Result<Vec<u8>> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -148,6 +171,9 @@ pub async fn generate_book(
     selection: &Selection,
     concurrency: usize,
     image_concurrency: usize,
+    html_limiter: Arc<AdaptiveLimiter>,
+    image_limiter: Arc<AdaptiveLimiter>,
+    cached_book: Option<Book>,
     version: EpubVersion,
     title_style: crate::model::TitleStyle,
     cover_source: CoverSource,
@@ -155,28 +181,34 @@ pub async fn generate_book(
 ) -> Result<BookResult> {
     progress.set_stage(Stage::FetchBook);
 
-    // 1. 解析书页信息
-    let html = fetch_html(client, url).await?;
-    let mut book = Book::default();
-    parse_book_info(&html, url, &mut book)?;
-    book.title = crate::parser::apply_title_style(
-        &crate::parser::parse_title(&book.title),
-        title_style,
+    // 1. 优先复用前端已经解析的书页与目录；其他调用方仍可走完整抓取流程。
+    let mut book = if let Some(book) = cached_book {
+        progress.set_stage(Stage::ParseToc);
+        book
+    } else {
+        let html = fetch_html_limited(client, url, &html_limiter).await?;
+        let mut book = Book::default();
+        parse_book_info(&html, url, &mut book)?;
+
+        progress.set_stage(Stage::ParseToc);
+        let toc_url = book
+            .toc_url
+            .clone()
+            .ok_or_else(|| Error::new(ErrorKind::NotFound, "未找到目录链接".into()))?;
+        let toc_html = fetch_html_limited(client, &toc_url, &html_limiter).await?;
+        parse_toc(&toc_html, &toc_url, &mut book)?;
+        book
+    };
+
+    book.title = title_for_selection(
+        crate::parser::apply_title_style(&crate::parser::parse_title(&book.title), title_style),
+        selection,
     );
 
-    // 2. 解析目录
-    progress.set_stage(Stage::ParseToc);
-    let toc_url = book
-        .toc_url
-        .clone()
-        .ok_or_else(|| Error::new(ErrorKind::NotFound, "未找到目录链接".into()))?;
-    let toc_html = fetch_html(client, &toc_url).await?;
-    parse_toc(&toc_html, &toc_url, &mut book)?;
-
-    // 3. 按选择范围过滤
+    // 2. 按选择范围过滤
     book = apply_selection(book, selection)?;
 
-    // 4. 并发下载并解析章节
+    // 3. 并发下载并解析章节
     progress.set_stage(Stage::DownloadChapters);
     let mut chapters: Vec<(usize, usize, Chapter)> = Vec::new();
     for (vi, vol) in book.volumes.iter().enumerate() {
@@ -206,10 +238,11 @@ pub async fn generate_book(
         let u = ch.url.clone();
         let t = ch.title.clone();
         let prog = progress.clone();
+        let limiter = html_limiter.clone();
         tasks.spawn(async move {
             let _permit = permit;
             let result: Result<(String, Vec<(String, String)>)> = async {
-                let chap_html = fetch_html(&c, &u).await?;
+                let chap_html = fetch_html_limited(&c, &u, &limiter).await?;
                 let (paragraphs, image_urls) = parse_chapter(&chap_html, &u)?;
                 let mut imgs = Vec::new();
                 for (j, src) in image_urls.iter().enumerate() {
@@ -226,8 +259,8 @@ pub async fn generate_book(
     }
 
     while let Some(joined) = tasks.join_next().await {
-        let (vi, ci, result) = joined
-            .map_err(|e| Error::new(ErrorKind::Encode, format!("章节任务失败: {e}")))?;
+        let (vi, ci, result) =
+            joined.map_err(|e| Error::new(ErrorKind::Encode, format!("章节任务失败: {e}")))?;
         let (xhtml, imgs) = result?;
         chapter_files.push(EpubFile {
             path: format!("OEBPS/Text/{vi}_{ci}.xhtml"),
@@ -238,7 +271,7 @@ pub async fn generate_book(
         }
     }
 
-    // 5. 并发下载图片
+    // 4. 并发下载图片
     progress.set_stage(Stage::DownloadImages);
     progress
         .images_total
@@ -262,17 +295,18 @@ pub async fn generate_book(
         let u = src.clone();
         let n = name.clone();
         let prog = progress.clone();
+        let limiter = image_limiter.clone();
         tasks.spawn(async move {
             let _permit = permit;
-            let result = fetch_bytes(&c, &u).await;
+            let result = fetch_bytes_limited(&c, &u, &limiter).await;
             prog.images_done.fetch_add(1, Ordering::Relaxed);
             (n, result)
         });
     }
 
     while let Some(joined) = tasks.join_next().await {
-        let (name, result) = joined
-            .map_err(|e| Error::new(ErrorKind::Encode, format!("图片任务失败: {e}")))?;
+        let (name, result) =
+            joined.map_err(|e| Error::new(ErrorKind::Encode, format!("图片任务失败: {e}")))?;
         match result {
             Ok(bytes) => {
                 downloaded.insert(name, bytes);
@@ -283,8 +317,10 @@ pub async fn generate_book(
             }
         }
     }
+    // EPUB manifest 需要完整的图片清单。单卷模式下这里也只包含当前卷。
+    book.images = all_images;
 
-    // 6. 获取封面（按策略，失败则跳过不视为错误）
+    // 5. 获取封面（按策略，失败则跳过不视为错误）
     progress.set_stage(Stage::Pack);
     book.cover = resolve_cover(client, &book, &downloaded, cover_source).await?;
 
@@ -305,9 +341,10 @@ pub async fn generate_book(
         bytes: container_xml.as_bytes().to_vec(),
     });
 
+    let flatten_toc = matches!(selection, Selection::Volume(_));
     match version {
-        EpubVersion::V3 => files.extend(gen_v3::generate(&book)?),
-        EpubVersion::V2 => files.extend(gen_v2::generate(&book)?),
+        EpubVersion::V3 => files.extend(gen_v3::generate(&book, flatten_toc)?),
+        EpubVersion::V2 => files.extend(gen_v2::generate(&book, flatten_toc)?),
     }
     files.extend(chapter_files);
     for (name, bytes) in &downloaded {
@@ -333,4 +370,51 @@ pub async fn generate_book(
         path,
         failed_images,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_selection, title_for_selection};
+    use crate::model::{Book, Chapter, Selection, Volume};
+
+    fn volume(name: &str) -> Volume {
+        Volume {
+            name: name.to_owned(),
+            chapters: vec![Chapter {
+                title: format!("{name}第一章"),
+                url: "https://example.com/chapter".to_owned(),
+            }],
+        }
+    }
+
+    #[test]
+    fn selecting_a_volume_keeps_only_that_volume() {
+        let book = Book {
+            volumes: vec![volume("卷一"), volume("卷二"), volume("卷三")],
+            ..Book::default()
+        };
+
+        let selected = apply_selection(book, &Selection::Volume(1)).unwrap();
+
+        assert_eq!(selected.volumes.len(), 1);
+        assert_eq!(selected.volumes[0].name, "卷二");
+    }
+
+    #[test]
+    fn volume_title_uses_original_one_based_number() {
+        assert_eq!(
+            title_for_selection("败犬女主太多了".to_owned(), &Selection::Volume(1)),
+            "败犬女主太多了2"
+        );
+    }
+
+    #[test]
+    fn selecting_an_unknown_volume_returns_an_error() {
+        let book = Book {
+            volumes: vec![volume("卷一")],
+            ..Book::default()
+        };
+
+        assert!(apply_selection(book, &Selection::Volume(2)).is_err());
+    }
 }

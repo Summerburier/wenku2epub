@@ -1,10 +1,11 @@
 mod color;
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
-use console::{Key, Term, style};
+use console::{Key, Term, style, truncate_str};
 use downloader::book::EpubVersion;
 use downloader::cover::CoverSource;
 use downloader::error::{Error, ErrorKind, Result};
@@ -97,6 +98,130 @@ fn select_option(title_text: &str, choices: &[String], default: usize) -> Result
     }
 }
 
+/// 使用方框多选：方向键移动、空格切换、Enter 确认。
+fn select_multiple(title_text: &str, choices: &[String]) -> Result<Vec<usize>> {
+    debug_assert!(!choices.is_empty());
+
+    let term = Term::stdout();
+    let mut cursor = 0usize;
+    let mut window_start = 0usize;
+    let mut selected = vec![false; choices.len()];
+    let (terminal_rows, terminal_columns) = term.size();
+    // 为标题、页码和操作提示留出空间，避免整份卷列表将视口推到最底部。
+    let visible_count = choices
+        .len()
+        .min(usize::from(terminal_rows).saturating_sub(5).max(1));
+    let line_count = visible_count + 3;
+    // 前缀“  ❯ ☐ ”占 6 列，再留 1 列防止终端在右边界自动换行。
+    let label_width = usize::from(terminal_columns).saturating_sub(7).max(1);
+
+    term.hide_cursor()
+        .map_err(|e| Error::new(ErrorKind::Encode, format!("隐藏光标失败: {e}")))?;
+
+    let selection_result = (|| -> Result<Vec<usize>> {
+        loop {
+            if cursor < window_start {
+                window_start = cursor;
+            } else if cursor >= window_start + visible_count {
+                window_start = cursor + 1 - visible_count;
+            }
+            let window_end = (window_start + visible_count).min(choices.len());
+
+            term.write_line(&menu_title(title_text))
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("写入菜单失败: {e}")))?;
+            term.write_line(&format!(
+                "  显示 {}-{} / 共 {} 卷",
+                window_start + 1,
+                window_end,
+                choices.len()
+            ))
+            .map_err(|e| Error::new(ErrorKind::Encode, format!("写入分页失败: {e}")))?;
+            for (index, label) in choices
+                .iter()
+                .enumerate()
+                .take(window_end)
+                .skip(window_start)
+            {
+                let pointer = if index == cursor {
+                    option("❯")
+                } else {
+                    " ".into()
+                };
+                let marker = if selected[index] {
+                    success_mark("☑")
+                } else {
+                    "☐".into()
+                };
+                let label = truncate_str(label, label_width, "…").into_owned();
+                let label = if index == cursor {
+                    style(&label).bold().to_string()
+                } else {
+                    label
+                };
+                term.write_line(&format!("  {pointer} {marker} {label}"))
+                    .map_err(|e| Error::new(ErrorKind::Encode, format!("写入选项失败: {e}")))?;
+            }
+            let hint = if selected.iter().any(|value| *value) {
+                "空格切换，Enter 完成"
+            } else {
+                "请至少选择一卷"
+            };
+            term.write_line(&format!("  {}", prompt(hint)))
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("写入提示失败: {e}")))?;
+
+            match term
+                .read_key()
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("读取按键失败: {e}")))?
+            {
+                Key::ArrowUp => cursor = cursor.saturating_sub(1),
+                Key::ArrowDown => cursor = (cursor + 1).min(choices.len() - 1),
+                Key::Char(' ') => selected[cursor] = !selected[cursor],
+                Key::Enter if selected.iter().any(|value| *value) => {
+                    break Ok(selected
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, value)| value.then_some(index))
+                        .collect());
+                }
+                Key::Escape => {
+                    break Err(Error::new(ErrorKind::Cancelled, "用户取消了选择".into()));
+                }
+                _ => {}
+            }
+
+            term.clear_last_lines(line_count)
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("刷新菜单失败: {e}")))?;
+        }
+    })();
+
+    let show_cursor_result = term.show_cursor();
+    match selection_result {
+        Ok(indices) => {
+            term.clear_last_lines(line_count)
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("收起菜单失败: {e}")))?;
+            let labels = indices
+                .iter()
+                .map(|index| choices[*index].as_str())
+                .collect::<Vec<_>>()
+                .join("、");
+            term.write_line(&format!(
+                "{} {} {}",
+                success_mark("◆"),
+                title_text.trim_end_matches('：'),
+                success(&labels)
+            ))
+            .map_err(|e| Error::new(ErrorKind::Encode, format!("写入选择结果失败: {e}")))?;
+            show_cursor_result
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("恢复光标失败: {e}")))?;
+            Ok(indices)
+        }
+        Err(error) => {
+            let _ = show_cursor_result;
+            Err(error)
+        }
+    }
+}
+
 /// 读取一行输入
 fn read_line(prompt_text: &str) -> Result<String> {
     print!("{}", prompt(prompt_text));
@@ -110,14 +235,13 @@ fn read_line(prompt_text: &str) -> Result<String> {
     Ok(line.trim().to_string())
 }
 
-/// 选择封面类型
+/// 全卷模式下选择封面类型。
 fn choose_cover_source() -> Result<CoverSource> {
     let choices = [
-        "轻小说文库封面",
-        "第一卷的第一张图片",
-        "当前目录的 cover.jpg/png 等图片",
-    ]
-    .map(str::to_owned);
+        "轻小说文库封面".to_owned(),
+        "第一卷的第一张图片".to_owned(),
+        "当前目录的 cover.jpg/png 等图片".to_owned(),
+    ];
     match select_option("请选择封面来源：", &choices, 0)? {
         0 => Ok(CoverSource::BookUrl),
         1 => Ok(CoverSource::FirstImage),
@@ -210,46 +334,107 @@ async fn main() -> Result<()> {
     let title_parts = downloader::parser::parse_title(&book.title);
     let title_style = choose_title_style(&title_parts)?;
 
-    let cover_source = choose_cover_source()?;
+    let toc_url = book
+        .toc_url
+        .clone()
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "未找到目录链接".into()))?;
+    let toc_html = downloader::client::fetch_html(&client, &toc_url).await?;
+    downloader::parser::parse_toc(&toc_html, &toc_url, &mut book)?;
+
+    let mode_choices = ["全卷下载（生成一个 EPUB）", "分卷下载（可多选）"].map(str::to_owned);
+    let split_mode = select_option("请选择下载模式：", &mode_choices, 0)? == 1;
+    let selections = if split_mode {
+        let volume_choices = book
+            .volumes
+            .iter()
+            .enumerate()
+            .map(|(index, volume)| format!("第 {} 卷：{}", index + 1, volume.name))
+            .collect::<Vec<_>>();
+        select_multiple("请选择要下载的分卷：", &volume_choices)?
+            .into_iter()
+            .map(Selection::Volume)
+            .collect::<Vec<_>>()
+    } else {
+        vec![Selection::All]
+    };
+
+    let cover_source = if split_mode {
+        println!("{} 已固定使用当前卷的第一张图片作为封面", success_mark("◆"));
+        CoverSource::FirstImage
+    } else {
+        choose_cover_source()?
+    };
     let version = choose_version()?;
 
-    let manager = DownloadManager::with_sink(1, 3, 5, cover_source, Arc::new(CliSink))?;
+    // 任务池大小等于所选卷数，使各分卷真正同时下载。
+    let max_jobs = selections.len();
+    // 每个分卷都保留原有的章节并发 3、图片并发 5。
+    const CHAPTER_CONCURRENCY: usize = 3;
+    const IMAGE_CONCURRENCY: usize = 5;
+    if split_mode {
+        println!(
+            "{} {} 个分卷并行（每卷章节并发 {}，图片并发 {}；理论总并发 {}/{}）",
+            success_mark("◆"),
+            max_jobs,
+            CHAPTER_CONCURRENCY,
+            IMAGE_CONCURRENCY,
+            max_jobs * CHAPTER_CONCURRENCY,
+            max_jobs * IMAGE_CONCURRENCY
+        );
+    }
+    let manager = DownloadManager::with_sink(
+        max_jobs,
+        CHAPTER_CONCURRENCY,
+        IMAGE_CONCURRENCY,
+        cover_source,
+        Arc::new(CliSink),
+    )?;
+    manager.cache_book(url.clone(), book);
 
-    // 创建并启动小说
-    let job_id = match manager
-        .dispatch(Command::CreateJob {
-            url: url.clone(),
-            selection: Selection::All,
-            version,
-            title_style,
-        })
-        .await?
-    {
-        CommandOutcome::Created(id) => id,
-        _ => return Err(Error::new(ErrorKind::Encode, "创建小说失败".into())),
-    };
-    manager.dispatch(Command::StartJob { job_id }).await?;
+    // 为每个选中的分卷创建独立任务；全卷模式只有一个任务。
+    let mut job_ids = Vec::new();
+    for selection in selections {
+        let job_id = match manager
+            .dispatch(Command::CreateJob {
+                url: url.clone(),
+                selection,
+                version,
+                title_style,
+            })
+            .await?
+        {
+            CommandOutcome::Created(id) => id,
+            _ => return Err(Error::new(ErrorKind::Encode, "创建小说失败".into())),
+        };
+        job_ids.push(job_id);
+    }
+    for &job_id in &job_ids {
+        manager.dispatch(Command::StartJob { job_id }).await?;
+    }
 
-    // 状态文本行 + 进度条行（分行显示，进度条不会因消息长度左右移动）
+    // 每个分卷任务使用独立进度条。
     let mp = MultiProgress::new();
-    let status = mp.add(ProgressBar::new(1));
-    status.set_style(ProgressStyle::with_template("{msg}").unwrap());
-    status.set_message("准备中...");
-
-    let pb = mp.add(ProgressBar::new(100));
-    pb.set_style(
-        ProgressStyle::with_template("{bar:40.blue} {pos}%")
-            .unwrap()
-            .progress_chars("█░"),
-    );
+    let mut progress_bars = HashMap::new();
+    for &job_id in &job_ids {
+        let pb = mp.add(ProgressBar::new(100));
+        pb.set_style(
+            ProgressStyle::with_template("{msg:30} {bar:40.blue} {pos}%")
+                .unwrap()
+                .progress_chars("█░"),
+        );
+        pb.set_message(format!("任务 #{job_id} 准备中"));
+        progress_bars.insert(job_id, pb);
+    }
 
     // 轮询快照直到结束
     loop {
         let snapshot = manager.get_snapshot();
         let mut all_done = true;
         for job in &snapshot {
-            status.set_message(stage_message(job));
-            pb.set_position(job.percent as u64);
+            if let Some(pb) = progress_bars.get(&job.job_id) {
+                pb.set_message(format!("任务 #{} {}", job.job_id, stage_message(job)));
+                pb.set_position(job.percent as u64);
+            }
             if !matches!(
                 job.status,
                 JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
@@ -259,26 +444,33 @@ async fn main() -> Result<()> {
         }
 
         if all_done {
-            status.finish(); // 保留状态行
-            pb.finish(); // 保留进度条（停在 100%）
-            if let Some(job) = snapshot.first() {
+            for pb in progress_bars.values() {
+                pb.finish_and_clear();
+            }
+            mp.clear()
+                .map_err(|e| Error::new(ErrorKind::Encode, format!("清理进度条失败: {e}")))?;
+            let mut snapshot = snapshot;
+            snapshot.sort_by_key(|job| job.job_id);
+            for job in &snapshot {
                 match job.status {
                     JobStatus::Completed => {
                         println!(
-                            "{} 小说 #{job_id} 完成：{}",
+                            "{} 小说 #{} 完成：{}",
                             success_mark("✔"),
+                            job.job_id,
                             success(job.result_path.as_deref().unwrap_or("未知路径"))
                         );
                     }
                     JobStatus::Failed => {
                         println!(
-                            "{} 小说 #{job_id} 失败：{}",
+                            "{} 小说 #{} 失败：{}",
                             failure_mark("✘"),
+                            job.job_id,
                             failure(job.error.as_deref().unwrap_or("未知错误"))
                         );
                     }
                     JobStatus::Cancelled => {
-                        println!("{} 小说 #{job_id} 已取消", cancel_mark("✘"));
+                        println!("{} 小说 #{} 已取消", cancel_mark("✘"), job.job_id);
                     }
                     _ => {}
                 }

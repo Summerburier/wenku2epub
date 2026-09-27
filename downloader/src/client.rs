@@ -1,11 +1,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{header, Client, StatusCode, Url};
+use tokio::sync::Notify;
 
 use crate::error::{Error, ErrorKind, Result};
 
 static UA_INDEX: AtomicU64 = AtomicU64::new(0);
+static RETRY_JITTER: AtomicU64 = AtomicU64::new(0);
 
 /// 最大尝试次数
 const MAX_ATTEMPTS: u32 = 10;
@@ -20,6 +24,121 @@ async fn retry_delay(attempt: u32) {
     }
     let idx = ((attempt - 1) as usize).min(RETRY_DELAYS_MS.len() - 1);
     tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[idx])).await;
+}
+
+/// 429 表示服务器正在限流：优先遵守 Retry-After，否则指数退避。
+async fn rate_limit_delay(resp: &reqwest::Response, attempt: u32) {
+    let retry_after = resp
+        .headers()
+        .get(header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(|| 1u64 << attempt.min(3));
+    // 让同时被限流的任务错开重试，避免在同一时刻再次冲击服务器。
+    let jitter_ms = RETRY_JITTER.fetch_add(73, Ordering::Relaxed) % 251;
+    tokio::time::sleep(Duration::from_secs(retry_after) + Duration::from_millis(jitter_ms)).await;
+}
+
+#[derive(Debug)]
+struct AdaptiveState {
+    limit: usize,
+    in_flight: usize,
+    successes: usize,
+    last_decrease: Option<Instant>,
+}
+
+/// 所有分卷共享的自适应并发控制器。
+///
+/// 从最大并发开始；收到 429 时将并发减半，连续成功后逐步恢复。
+#[derive(Debug)]
+pub struct AdaptiveLimiter {
+    state: Mutex<AdaptiveState>,
+    notify: Notify,
+    min_limit: usize,
+    max_limit: usize,
+}
+
+impl AdaptiveLimiter {
+    pub fn new(max_limit: usize) -> Arc<Self> {
+        let max_limit = max_limit.max(1);
+        Arc::new(Self {
+            state: Mutex::new(AdaptiveState {
+                limit: max_limit,
+                in_flight: 0,
+                successes: 0,
+                last_decrease: None,
+            }),
+            notify: Notify::new(),
+            min_limit: 1,
+            max_limit,
+        })
+    }
+
+    pub async fn acquire(self: &Arc<Self>) -> AdaptivePermit {
+        loop {
+            // 先创建通知 future，避免在检查状态与等待之间丢失唤醒。
+            let notified = self.notify.notified();
+            {
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.in_flight < state.limit {
+                    state.in_flight += 1;
+                    return AdaptivePermit {
+                        limiter: self.clone(),
+                    };
+                }
+            }
+            notified.await;
+        }
+    }
+
+    pub fn record_success(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.successes += 1;
+        // 至少经历当前并发量的两轮成功才加 1，避免恢复过快。
+        if state.limit < self.max_limit && state.successes >= state.limit * 2 {
+            state.limit += 1;
+            state.successes = 0;
+            self.notify.notify_waiters();
+        }
+    }
+
+    pub fn record_rate_limit(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.successes = 0;
+        let now = Instant::now();
+        // 同一批并发请求可能同时返回 429，1 秒内只降一次，防止瞬间跌到 1。
+        let can_decrease = state
+            .last_decrease
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1));
+        if can_decrease {
+            state.limit = (state.limit / 2).max(self.min_limit);
+            state.last_decrease = Some(now);
+        }
+    }
+
+    pub fn current_limit(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .limit
+    }
+}
+
+pub struct AdaptivePermit {
+    limiter: Arc<AdaptiveLimiter>,
+}
+
+impl Drop for AdaptivePermit {
+    fn drop(&mut self) {
+        let mut state = self
+            .limiter
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        state.in_flight = state.in_flight.saturating_sub(1);
+        drop(state);
+        self.limiter.notify.notify_one();
+    }
 }
 
 /// 默认 User-Agent 列表
@@ -105,10 +224,30 @@ pub fn build_client() -> Result<Client> {
 /// 带重试的 HTTP GET，获取 HTML 页面，返回解码后的 UTF-8 文本（GBK 解码）
 /// 所有失败统一重试，循环耗尽后统一返回"url:尝试次数:错误代码"
 pub async fn fetch_html(client: &Client, url: &str) -> Result<String> {
+    fetch_html_inner(client, url, None).await
+}
+
+pub async fn fetch_html_limited(
+    client: &Client,
+    url: &str,
+    limiter: &Arc<AdaptiveLimiter>,
+) -> Result<String> {
+    fetch_html_inner(client, url, Some(limiter)).await
+}
+
+async fn fetch_html_inner(
+    client: &Client,
+    url: &str,
+    limiter: Option<&Arc<AdaptiveLimiter>>,
+) -> Result<String> {
     let mut last_error = String::new();
     for attempt in 0..MAX_ATTEMPTS {
         // 首次（attempt == 0）不等待；失败后的重试前按数组延迟
         retry_delay(attempt).await;
+        let adaptive_permit = match limiter {
+            Some(limiter) => Some(limiter.acquire().await),
+            None => None,
+        };
 
         let resp = match client
             .get(url)
@@ -119,21 +258,17 @@ pub async fn fetch_html(client: &Client, url: &str) -> Result<String> {
             Ok(r) => r,
             Err(e) => {
                 last_error = e.to_string(); // 网络错误
+                drop(adaptive_permit);
                 continue;
             }
         };
 
         if resp.status() == StatusCode::TOO_MANY_REQUESTS {
-            // 前 6 次只用数组延迟；超过 6 次才听服务器的 Retry-After 指令
-            if attempt >= 6 {
-                let retry_after = resp
-                    .headers()
-                    .get(header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(5);
-                tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+            if let Some(limiter) = limiter {
+                limiter.record_rate_limit();
             }
+            drop(adaptive_permit);
+            rate_limit_delay(&resp, attempt).await;
             last_error = "429".to_string(); // 被限流
             continue;
         }
@@ -142,8 +277,10 @@ pub async fn fetch_html(client: &Client, url: &str) -> Result<String> {
             // 5xx/408 是临时错误，重试；其他 4xx（403/404/400...）是永久错误，直接抛出
             if resp.status().is_server_error() || resp.status() == StatusCode::REQUEST_TIMEOUT {
                 last_error = resp.status().as_str().to_string(); // 状态码，如 "503"
+                drop(adaptive_permit);
                 continue;
             }
+            drop(adaptive_permit);
             return Err(Error::new(
                 ErrorKind::NotFound,
                 format!("{url},{},{}", attempt + 1, resp.status().as_str()),
@@ -154,9 +291,14 @@ pub async fn fetch_html(client: &Client, url: &str) -> Result<String> {
             Ok(b) => b,
             Err(e) => {
                 last_error = e.to_string(); // 读取失败
+                drop(adaptive_permit);
                 continue;
             }
         };
+        if let Some(limiter) = limiter {
+            limiter.record_success();
+        }
+        drop(adaptive_permit);
         let (cow, _, _) = encoding_rs::GBK.decode(&bytes);
         return Ok(cow.into_owned());
     }
@@ -169,14 +311,35 @@ pub async fn fetch_html(client: &Client, url: &str) -> Result<String> {
 
 /// 带重试的 HTTP GET，获取二进制资源（图片），返回原始字节。
 /// referer 应指向来源站点（wenku8 域名），图片服务器按此防盗链放行。
-/// 所有失败固定延迟 50ms 重试，循环耗尽后统一返回"url:尝试次数:错误代码"
+/// 普通失败延迟 50ms 重试，429 则遵守 Retry-After 或指数退避。
+/// 循环耗尽后统一返回"url:尝试次数:错误代码"
 pub async fn fetch_bytes(client: &Client, src: &str) -> Result<Vec<u8>> {
+    fetch_bytes_inner(client, src, None).await
+}
+
+pub async fn fetch_bytes_limited(
+    client: &Client,
+    src: &str,
+    limiter: &Arc<AdaptiveLimiter>,
+) -> Result<Vec<u8>> {
+    fetch_bytes_inner(client, src, Some(limiter)).await
+}
+
+async fn fetch_bytes_inner(
+    client: &Client,
+    src: &str,
+    limiter: Option<&Arc<AdaptiveLimiter>>,
+) -> Result<Vec<u8>> {
     let mut last_error = String::new();
     for attempt in 0..MAX_ATTEMPTS {
         // 首次（attempt == 0）不等待；失败后的重试前固定等 50ms
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        let adaptive_permit = match limiter {
+            Some(limiter) => Some(limiter.acquire().await),
+            None => None,
+        };
 
         let resp = match client
             .get(src)
@@ -187,12 +350,24 @@ pub async fn fetch_bytes(client: &Client, src: &str) -> Result<Vec<u8>> {
             Ok(r) => r,
             Err(e) => {
                 last_error = e.to_string(); // 网络错误
+                drop(adaptive_permit);
                 continue;
             }
         };
 
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            if let Some(limiter) = limiter {
+                limiter.record_rate_limit();
+            }
+            drop(adaptive_permit);
+            rate_limit_delay(&resp, attempt).await;
+            last_error = "429".to_string();
+            continue;
+        }
+
         if !resp.status().is_success() {
             last_error = resp.status().as_str().to_string(); // 状态码，如 "403"
+            drop(adaptive_permit);
             continue;
         }
 
@@ -200,9 +375,14 @@ pub async fn fetch_bytes(client: &Client, src: &str) -> Result<Vec<u8>> {
             Ok(b) => b.to_vec(),
             Err(e) => {
                 last_error = e.to_string(); // 读取失败
+                drop(adaptive_permit);
                 continue;
             }
         };
+        if let Some(limiter) = limiter {
+            limiter.record_success();
+        }
+        drop(adaptive_permit);
         return Ok(bytes);
     }
 
@@ -210,4 +390,27 @@ pub async fn fetch_bytes(client: &Client, src: &str) -> Result<Vec<u8>> {
         ErrorKind::Network,
         format!("{src},{MAX_ATTEMPTS},{last_error}"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AdaptiveLimiter;
+
+    #[test]
+    fn adaptive_limiter_halves_then_recovers_slowly() {
+        let limiter = AdaptiveLimiter::new(12);
+
+        limiter.record_rate_limit();
+        assert_eq!(limiter.current_limit(), 6);
+
+        // 同一批 429 不应连续将并发压到 1。
+        limiter.record_rate_limit();
+        assert_eq!(limiter.current_limit(), 6);
+
+        // 当前限制的两轮请求都成功后，只恢复 1 个并发。
+        for _ in 0..12 {
+            limiter.record_success();
+        }
+        assert_eq!(limiter.current_limit(), 7);
+    }
 }

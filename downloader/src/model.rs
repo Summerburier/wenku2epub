@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Book {
     /// 书名
     pub title: String,
@@ -23,7 +23,7 @@ pub struct Book {
     pub images: HashMap<String, String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Volume {
     /// 卷名
     pub name: String,
@@ -39,11 +39,16 @@ pub struct Chapter {
     pub url: String,
 }
 
-/// 下载范围选择：全书 / 区间 / 指定章节
+/// 下载范围选择：全书 / 单卷 / 区间 / 指定章节
 #[derive(Debug, Clone, PartialEq)]
 pub enum Selection {
     All,
-    Range { start: usize, end: usize },
+    /// 按目录中的零起始卷下标下载单独的 EPUB。
+    Volume(usize),
+    Range {
+        start: usize,
+        end: usize,
+    },
     Chapters(Vec<usize>),
 }
 

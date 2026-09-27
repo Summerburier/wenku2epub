@@ -51,12 +51,11 @@ pub async fn resolve_cover(
         },
 
         CoverSource::FirstImage => {
-            // 第一卷的图片文件名为 "0_<章>_<图>.jpg"，
+            // 当前书籍第一卷的图片文件名为 "0_<章>_<图>.jpg"。
+            // 分卷下载会先过滤到单卷，因此这正是被选卷的第一张图。
             // 按 (卷, 章, 图) 数值排序（而非字符串字典序，避免 0_0_10 < 0_0_2 的陷阱），取第一张
-            let mut keys: Vec<&String> = downloaded
-                .keys()
-                .filter(|k| k.starts_with("0_"))
-                .collect();
+            let mut keys: Vec<&String> =
+                downloaded.keys().filter(|k| k.starts_with("0_")).collect();
             keys.sort_by_key(|k| {
                 let parts: Vec<usize> = k
                     .trim_end_matches(".jpg")
