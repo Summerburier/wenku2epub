@@ -67,6 +67,10 @@ PS：建议还是使用终端运行。Windows运行使用 .\wenku2epub.exe，防
 
 选择封面来源 3，并把图片命名为 `cover.jpg`（或 `cover.png`、`cover.jpeg`、`cover.gif`、`cover.webp`、`cover.bmp`）放在程序所在目录即可。
 
+**为什么分卷下载这么慢？**
+
+由于分卷下载请求变多，导致收到服务器的429限流，目前没有找到好的解决方法😭
+
 ## 自行编译（可选）
 
 需要安装 [Rust](https://www.rust-lang.org/tools/install)：
