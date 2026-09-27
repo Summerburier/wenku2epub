@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to upload assets to (e.g. v2.0.2)
+        required: true
 
 permissions:
   contents: write
@@ -72,4 +76,4 @@ jobs:
       - name: Upload binaries to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.ref_name }}" artifacts/* --clobber --repo "${{ github.repository }}"
+        run: gh release upload "${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag || github.ref_name }}" artifacts/* --clobber --repo "${{ github.repository }}"
