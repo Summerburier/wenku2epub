@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::model::{escape_xml, Book, EpubFile};
 
 /// 生成 EPUB2 的 content.opf 和 toc.ncx
-pub fn generate(book: &Book) -> Result<Vec<EpubFile>> {
+pub fn generate(book: &Book, flatten_toc: bool) -> Result<Vec<EpubFile>> {
     let mut files = Vec::new();
     files.push(EpubFile {
         path: "OEBPS/content.opf".into(),
@@ -10,7 +10,7 @@ pub fn generate(book: &Book) -> Result<Vec<EpubFile>> {
     });
     files.push(EpubFile {
         path: "OEBPS/toc.ncx".into(),
-        bytes: build_ncx(book).into_bytes(),
+        bytes: build_ncx(book, flatten_toc).into_bytes(),
     });
     Ok(files)
 }
@@ -69,11 +69,25 @@ fn build_opf(book: &Book) -> String {
     )
 }
 
-fn build_ncx(book: &Book) -> String {
+fn build_ncx(book: &Book, flatten_toc: bool) -> String {
     let mut nav_map = String::new();
     let mut play_order = 0usize;
 
     for (vi, vol) in book.volumes.iter().enumerate() {
+        if flatten_toc {
+            for (ci, ch) in vol.chapters.iter().enumerate() {
+                play_order += 1;
+                nav_map.push_str(&format!(
+                    r#"    <navPoint id="v{vi}_c{ci}" playOrder="{play_order}">
+      <navLabel><text>{ch_name}</text></navLabel>
+      <content src="Text/{vi}_{ci}.xhtml" />
+    </navPoint>
+"#,
+                    ch_name = escape_xml(&ch.title),
+                ));
+            }
+            continue;
+        }
         play_order += 1;
         nav_map.push_str(&format!(
             r#"    <navPoint id="v{vi}" playOrder="{play_order}">
@@ -109,4 +123,29 @@ fn build_ncx(book: &Book) -> String {
 "#,
         title = escape_xml(&book.title),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_ncx;
+    use crate::model::{Book, Chapter, Volume};
+
+    #[test]
+    fn flat_ncx_has_chapters_without_a_volume_parent() {
+        let book = Book {
+            title: "测试书1".to_owned(),
+            volumes: vec![Volume {
+                name: "第一卷".to_owned(),
+                chapters: vec![Chapter {
+                    title: "序章".to_owned(),
+                    url: String::new(),
+                }],
+            }],
+            ..Book::default()
+        };
+
+        let ncx = build_ncx(&book, true);
+        assert!(ncx.contains("<text>序章</text>"));
+        assert!(!ncx.contains("<text>第一卷</text>"));
+    }
 }

@@ -6,10 +6,10 @@ use reqwest::Client;
 use tokio::sync::Semaphore;
 
 use crate::book::{self, EpubVersion};
-use crate::client::build_client;
+use crate::client::{AdaptiveLimiter, build_client};
 use crate::cover::CoverSource;
 use crate::error::{ErrorKind, Result};
-use crate::model::{Progress, Selection, Stage, TitleStyle};
+use crate::model::{Book, Progress, Selection, Stage, TitleStyle};
 use crate::protocol::{
     Command, CommandOutcome, Event, EventSink, JobId, JobSnapshot, JobStatus,
 };
@@ -36,10 +36,16 @@ pub struct DownloadManager {
     pool: Arc<Semaphore>,
     /// 共享 HTTP 客户端
     client: Client,
-    /// 章节下载并发数
+    /// CLI 已经解析的书页和目录，避免每个分卷重复请求。
+    book_cache: Arc<Mutex<HashMap<String, Book>>>,
+    /// 每个任务的章节下载并发数
     concurrency: usize,
-    /// 图片下载并发数
+    /// 每个任务的图片下载并发数
     image_concurrency: usize,
+    /// 所有分卷共享的自适应 HTML 并发上限
+    html_limiter: Arc<AdaptiveLimiter>,
+    /// 所有分卷共享的自适应图片并发上限
+    image_limiter: Arc<AdaptiveLimiter>,
     /// 封面获取策略
     cover_source: CoverSource,
     sink: Option<Arc<dyn EventSink>>,
@@ -58,8 +64,11 @@ impl DownloadManager {
             next_id: AtomicU64::new(0),
             pool: Arc::new(Semaphore::new(max_jobs)),
             client,
+            book_cache: Arc::new(Mutex::new(HashMap::new())),
             concurrency,
             image_concurrency,
+            html_limiter: AdaptiveLimiter::new(max_jobs.saturating_mul(concurrency)),
+            image_limiter: AdaptiveLimiter::new(max_jobs.saturating_mul(image_concurrency)),
             cover_source,
             sink: None,
         })
@@ -81,6 +90,14 @@ impl DownloadManager {
         if let Some(sink) = &self.sink {
             sink.emit(event);
         }
+    }
+
+    /// 注入前端已解析的完整目录，供同一 URL 的所有分卷任务共享。
+    pub fn cache_book(&self, url: String, book: Book) {
+        self.book_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(url, book);
     }
 
     /// 统一命令入口
@@ -171,7 +188,15 @@ impl DownloadManager {
         let sink = self.sink.clone();
         let concurrency = self.concurrency;
         let image_concurrency = self.image_concurrency;
+        let html_limiter = self.html_limiter.clone();
+        let image_limiter = self.image_limiter.clone();
         let cover_source = self.cover_source;
+        let cached_book = self
+            .book_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&url)
+            .cloned();
 
         tokio::spawn(async move {
             let _permit = match pool.acquire_owned().await {
@@ -185,6 +210,9 @@ impl DownloadManager {
                 &selection,
                 concurrency,
                 image_concurrency,
+                html_limiter,
+                image_limiter,
+                cached_book,
                 version,
                 title_style,
                 cover_source,
